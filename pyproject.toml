@@ -1,0 +1,34 @@
+# Workspace-level tool configuration. Each service/library has its own
+# pyproject.toml for packaging; this file only configures shared tooling.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "B",        # bugbear
+  "UP",       # pyupgrade
+  "S",        # bandit (security)
+  "SIM",      # simplify
+  "RUF",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sentinelflow_common"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]  # assert is fine in tests
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["libs", "services"]
