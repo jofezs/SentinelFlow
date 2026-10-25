@@ -58,7 +58,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 0** – Repo tooling, CI, shared event contracts
 - [x] **Phase 1** – API gateway (FastAPI + PostgreSQL, API-key auth)
 - [x] **Phase 2** – Event bus (NATS JetStream), transactional outbox, Dockerfile scanner
-- [ ] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
+- [x] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
 - [ ] **Phase 4** – Policy engine (OPA/Rego)
 - [ ] **Phase 5** – Webhook notifier (HMAC-signed, retries) + Prometheus/Grafana
 - [ ] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies
@@ -76,20 +76,29 @@ docker compose up --build -d --wait
 
 Interactive API docs: <http://localhost:8000/docs>
 
-Run the end-to-end smoke test (submits an insecure Dockerfile and checks the findings):
+Run the end-to-end smoke test (one scan of each type, plus an SSRF attempt):
 
 ```bash
 python scripts/smoke_test.py
 ```
 
 ```
-status=completed max_severity=critical findings=7
-  [critical] SF002   line 2   Secret 'DB_PASSWORD' hard-coded in ENV
-  [    high] SF001   line 1   Container runs as root (no USER instruction)
-  [    high] SF005   line 3   Remote script piped directly into a shell
-  [  medium] DL3007  line 1   Using latest is prone to errors if the image will ever update...
-  [  medium] SF008   line 4   SSH port 22 exposed
-  ...
+[dockerfile] 'FROM ubuntu:latest\nENV DB_PASSWORD=hunter2...' -> completed (max=critical, findings=7)
+  [critical] SF002            Secret 'DB_PASSWORD' hard-coded in ENV
+  [    high] SF001            Container runs as root (no USER instruction)
+  [    high] SF005            Remote script piped directly into a shell
+
+[image] 'alpine:3.18.0' -> completed (max=critical, findings=49)
+  [critical] CVE-2022-48174   busybox 1.36.0-r9: busybox: stack overflow vulnerability in ash.c
+  [    high] CVE-2023-5363    libcrypto3 3.1.0-r4: openssl: Incorrect cipher key and IV length
+
+[api] 'https://example.com/' -> completed (max=medium, findings=4)
+  [  medium] API010           Missing Strict-Transport-Security header
+  [     low] API013           Missing X-Content-Type-Options: nosniff
+
+[ssrf] 'http://169.254.169.254/latest/meta-data/' -> failed
+       destination not allowed: 169.254.169.254 is not a public address
+PASS
 ```
 
 ```bash
@@ -170,6 +179,39 @@ Hadolint covers build best practices; SentinelFlow adds security-focused rules:
 Untrusted Dockerfiles are passed to Hadolint on **stdin** via `exec` (no shell, no temp files),
 with a timeout.
 
+### Image scanner
+
+[Trivy](https://github.com/aquasecurity/trivy) scans images for OS/language-package CVEs and
+embedded secrets. It pulls directly from the registry, so the scanner **never needs the Docker
+socket** (mounting it would grant root on the host). The image reference is passed after `--`, so
+even a flag-shaped reference is never parsed as an option. The Trivy image is pinned by digest.
+Findings are deduplicated, ordered by severity then fixability, and capped at 500 per scan.
+
+### API endpoint scanner and SSRF protection
+
+The API scanner fetches user-supplied URLs, which makes it a classic **SSRF** target. The guard is
+enforced at the connection layer rather than as an up-front URL check:
+
+- Every TCP connection, including each redirect hop and the separate TLS probe, goes through a
+  custom `httpcore` network backend that resolves the host, requires **every** resolved address to
+  be public, and connects to exactly that validated IP. This defeats **DNS rebinding**.
+- Rejected: loopback, RFC 1918, link-local (cloud metadata `169.254.169.254`), CGNAT, multicast,
+  reserved, and IPv4-mapped IPv6. Verified against decimal/hex/octal IP encodings, `localtest.me`,
+  and `nip.io` names.
+- Ports limited to 80/443/8080/8443; optional host allowlist (`SENTINELFLOW_ALLOWED_HOSTS`);
+  environment proxies are ignored (they would bypass the guard).
+- Non-destructive: one `GET` (body never read) and one TLS handshake, with an identifying
+  `User-Agent`.
+
+| ID | Detects |
+|---|---|
+| API001 | Plaintext HTTP |
+| API002–004 | Weak TLS version, invalid certificate, certificate expiring within 30 days |
+| API010–014 | Missing/weak HSTS, missing CSP, missing `nosniff`, no clickjacking protection |
+| API015 | Version disclosure (`Server`, `X-Powered-By`) |
+| API016 | Cookies without `Secure` / `HttpOnly` / `SameSite` |
+| API020–023 | CORS: arbitrary origin reflection (critical with credentials), `null`, `*` |
+
 ## Development
 
 Requirements: Python 3.12, Docker Desktop. Later phases also use kind and Helm.
@@ -182,7 +224,7 @@ pre-commit install
 
 pytest                                         # tests (in-memory SQLite by default)
 ruff check . && ruff format --check .          # lint
-mypy libs/common/src services/gateway/src services/scanner-dockerfile/src
+mypy libs/common/src services/*/src
 ```
 
 With the Compose stack running, run the suite against real Postgres and NATS (as CI does):
@@ -199,8 +241,8 @@ against the full Compose stack.
 ## Responsible use
 
 The API endpoint scanner performs non-destructive checks (TLS configuration, security headers,
-CORS) and is restricted to an allowlist of targets. Only scan systems you own or are authorized
-to test.
+CORS), refuses internal destinations, and can be restricted to a host allowlist. Only scan systems
+you own or are authorized to test.
 
 ## License
 

@@ -90,6 +90,34 @@ services:
       nats:
         condition: service_healthy
 
+  scanner-image:
+    build:
+      context: .
+      dockerfile: services/scanner-image/Dockerfile
+    image: sentinelflow/scanner-image:dev
+    environment:
+      <<: *common-env
+    volumes:
+      - trivy-cache:/var/cache/trivy  # vulnerability DB persists across restarts
+    restart: on-failure
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  scanner-api:
+    build:
+      context: .
+      dockerfile: services/scanner-api/Dockerfile
+    image: sentinelflow/scanner-api:dev
+    environment:
+      <<: *common-env
+      SENTINELFLOW_ALLOWED_HOSTS: ${SENTINELFLOW_ALLOWED_HOSTS:-}
+    restart: on-failure
+    depends_on:
+      nats:
+        condition: service_healthy
+
 volumes:
   pgdata:
   natsdata:
+  trivy-cache:

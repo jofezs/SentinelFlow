@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -65,7 +65,9 @@ jobs:
         run: ruff format --check .
 
       - name: Mypy
-        run: mypy libs/common/src services/gateway/src services/scanner-dockerfile/src
+        run: >-
+          mypy libs/common/src services/gateway/src services/scanner-dockerfile/src
+          services/scanner-image/src services/scanner-api/src
 
       - name: Create test database
         run: PGPASSWORD=sentinelflow psql -h localhost -U sentinelflow -c "CREATE DATABASE sentinelflow_test"
@@ -74,6 +76,7 @@ jobs:
         run: >-
           pytest
           --cov=sentinelflow_common --cov=sentinelflow_gateway --cov=sentinelflow_dockerfile_scanner
+          --cov=sentinelflow_image_scanner --cov=sentinelflow_api_scanner
           --cov-report=term-missing
 
       - name: Migrations apply cleanly and match models
@@ -88,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [gateway, scanner-dockerfile]
+        service: [gateway, scanner-dockerfile, scanner-image, scanner-api]
     steps:
       - uses: actions/checkout@v4
       - name: Lint Dockerfile
