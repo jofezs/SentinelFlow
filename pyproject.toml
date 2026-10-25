@@ -18,17 +18,20 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["sentinelflow_common"]
+known-first-party = ["sentinelflow_common", "sentinelflow_gateway"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101"]  # assert is fine in tests
+"**/tests/**" = ["S101", "S105", "S106"]  # asserts and fake secrets are fine in tests
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 explicit_package_bases = true
+mypy_path = "libs/common/src,services/gateway/src"
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --import-mode=importlib"
 testpaths = ["libs", "services"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

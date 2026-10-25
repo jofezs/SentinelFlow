@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelflow-gateway"
+version = "0.1.0"
+description = "SentinelFlow API gateway: authentication, scan submission, and results"
+requires-python = ">=3.12"
+dependencies = [
+  "sentinelflow-common",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "pydantic-settings>=2.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
