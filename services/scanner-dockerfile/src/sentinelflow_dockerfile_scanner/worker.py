@@ -1,15 +1,13 @@
 """Dockerfile scanner worker. Run with: python -m sentinelflow_dockerfile_scanner.worker"""
 
 import asyncio
-import logging
+from functools import partial
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from sentinelflow_common.bus import AnyEvent, JetStreamBus, install_signal_handlers
-from sentinelflow_common.events import ScanRequested, Subjects, TargetType
+from sentinelflow_common.events import TargetType
+from sentinelflow_common.worker import configure_logging, run_scanner_worker
 from sentinelflow_dockerfile_scanner.scanner import handle_request
-
-logger = logging.getLogger("sentinelflow_dockerfile_scanner.worker")
 
 
 class ScannerSettings(BaseSettings):
@@ -23,38 +21,16 @@ class ScannerSettings(BaseSettings):
 
 async def main() -> None:
     settings = ScannerSettings()
-    logging.basicConfig(
-        level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    configure_logging(settings.log_level)
+    await run_scanner_worker(
+        name="scanner-dockerfile",
+        target_type=TargetType.DOCKERFILE,
+        handle=partial(
+            handle_request, hadolint_binary=settings.hadolint_binary, timeout=settings.scan_timeout
+        ),
+        nats_url=settings.nats_url,
+        ack_wait=settings.scan_timeout * 2 * 10,  # batch of 10, each up to scan_timeout
     )
-    bus = await JetStreamBus.connect(settings.nats_url, name="scanner-dockerfile")
-    await bus.ensure_stream()
-
-    async def on_event(event: AnyEvent) -> None:
-        if not isinstance(event, ScanRequested):
-            return
-        logger.info("scanning %s", event.scan_id)
-        result = await handle_request(event, settings.hadolint_binary, settings.scan_timeout)
-        if result is not None:
-            # Deterministic msg id: a redelivered request yields a deduplicated result.
-            await bus.publish_event(
-                Subjects.SCAN_COMPLETED, result, msg_id=f"{event.scan_id}.completed"
-            )
-            logger.info(
-                "scan %s %s with %d findings", event.scan_id, result.status, len(result.findings)
-            )
-
-    stop = asyncio.Event()
-    install_signal_handlers(stop)
-    try:
-        await bus.consume(
-            Subjects.scan_requested(TargetType.DOCKERFILE),
-            "scanner-dockerfile",
-            on_event,
-            stop,
-            ack_wait=settings.scan_timeout * 2,
-        )
-    finally:
-        await bus.close()
 
 
 if __name__ == "__main__":
