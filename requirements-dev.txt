@@ -3,6 +3,7 @@
 -e ./services/scanner-dockerfile
 -e ./services/scanner-image
 -e ./services/scanner-api
+-e ./services/policy-engine
 pytest>=8.3
 pytest-asyncio>=0.24
 pytest-cov>=5.0

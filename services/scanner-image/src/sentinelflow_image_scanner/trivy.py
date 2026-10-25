@@ -35,6 +35,7 @@ def _vulnerability(target: str, v: dict[str, Any]) -> Finding:
         description=_clip(v.get("Description", ""), 500),
         location=_clip(f"{target} > {pkg}@{version}", 300),
         remediation=f"Upgrade {pkg} to {fixed}" if fixed else "No fixed version available yet",
+        fix_available=bool(fixed),
     )
 
 

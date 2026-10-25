@@ -6,15 +6,16 @@ which keeps them independently deployable.
 
 Flow:
     gateway   --scan.requested.<target>-->  scanners
-    scanners  --scan.completed----------->  policy engine, results store
-    policy    --policy.evaluated--------->  results store, notifier
+    scanners  --scan.completed----------->  gateway (stores results)
+    gateway   --policy.requested--------->  policy engine (findings + project policy config)
+    policy    --policy.evaluated--------->  gateway (stores decision), notifier
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -60,6 +61,7 @@ class Subjects:
 
     SCAN_REQUESTED = "scan.requested"
     SCAN_COMPLETED = "scan.completed"
+    POLICY_REQUESTED = "policy.requested"
     POLICY_EVALUATED = "policy.evaluated"
 
     @staticmethod
@@ -78,6 +80,9 @@ class Finding(_Model):
     description: str = ""
     location: str | None = Field(default=None, description="File:line, package, or header name")
     remediation: str | None = None
+    fix_available: bool | None = Field(
+        default=None, description="For vulnerabilities: whether a fixed version exists"
+    )
 
 
 class _EventBase(_Model):
@@ -112,6 +117,27 @@ class ScanCompleted(_EventBase):
         return max((f.severity for f in self.findings), key=lambda s: s.rank)
 
 
+class PolicyConfig(_Model):
+    """A project's policy selection. ``enabled=None`` means every policy applies."""
+
+    enabled: tuple[str, ...] | None = None
+    params: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class PolicyEvaluationRequested(_EventBase):
+    """Carries everything the (stateless) policy engine needs, including a
+    snapshot of the project's policy config at evaluation time, so each
+    decision records exactly which rules it was judged against."""
+
+    event_type: Literal["policy.requested"] = "policy.requested"
+    project_id: UUID
+    target_type: TargetType
+    target: str
+    scanner: str
+    findings: tuple[Finding, ...] = ()
+    config: PolicyConfig = Field(default_factory=PolicyConfig)
+
+
 class PolicyViolation(_Model):
     policy_id: str
     message: str
@@ -125,19 +151,18 @@ class PolicyEvaluated(_EventBase):
     violations: tuple[PolicyViolation, ...] = ()
 
 
-Event = Annotated[
-    ScanRequested | ScanCompleted | PolicyEvaluated,
-    Field(discriminator="event_type"),
-]
+AnyEvent = ScanRequested | ScanCompleted | PolicyEvaluationRequested | PolicyEvaluated
+
+Event = Annotated[AnyEvent, Field(discriminator="event_type")]
 
 _event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
 
 
-def encode_event(event: ScanRequested | ScanCompleted | PolicyEvaluated) -> bytes:
+def encode_event(event: AnyEvent) -> bytes:
     """Serialize an event for publishing on the bus."""
     return event.model_dump_json().encode()
 
 
-def decode_event(payload: bytes | str) -> ScanRequested | ScanCompleted | PolicyEvaluated:
+def decode_event(payload: bytes | str) -> AnyEvent:
     """Parse a bus payload into the correct event model (validated)."""
     return _event_adapter.validate_json(payload)

@@ -17,7 +17,7 @@ def prioritize(findings: list[Finding], limit: int = MAX_FINDINGS) -> list[Findi
     """Most severe first (fixable before unfixable); truncate with a marker finding."""
     ordered = sorted(
         findings,
-        key=lambda f: (-f.severity.rank, (f.remediation or "").startswith("No fixed"), f.rule_id),
+        key=lambda f: (-f.severity.rank, f.fix_available is False, f.rule_id),
     )
     if len(ordered) <= limit:
         return ordered

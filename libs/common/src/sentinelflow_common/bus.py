@@ -22,14 +22,10 @@ from nats.js import JetStreamContext
 from nats.js.api import AckPolicy, ConsumerConfig, RetentionPolicy, StorageType, StreamConfig
 from pydantic import ValidationError
 
-from sentinelflow_common.events import (
-    PolicyEvaluated,
-    ScanCompleted,
-    ScanRequested,
-    decode_event,
-    encode_event,
-)
+from sentinelflow_common.events import AnyEvent, decode_event, encode_event
 from sentinelflow_common.health import Heartbeat
+
+__all__ = ["AnyEvent", "Handler", "JetStreamBus", "dispatch_message", "install_signal_handlers"]
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +34,6 @@ STREAM_SUBJECTS = ["scan.>", "policy.>"]
 DUPLICATE_WINDOW_SECONDS = 120.0
 MAX_AGE_SECONDS = 7 * 24 * 3600.0
 
-AnyEvent = ScanRequested | ScanCompleted | PolicyEvaluated
 Handler = Callable[[AnyEvent], Awaitable[None]]
 
 

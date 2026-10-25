@@ -70,7 +70,9 @@ def test_parse_report_maps_and_deduplicates() -> None:
     assert len(findings) == 4
     assert by_id["CVE-2022-48174"].severity == Severity.CRITICAL
     assert by_id["CVE-2022-48174"].remediation == "Upgrade busybox to 1.1"
+    assert by_id["CVE-2022-48174"].fix_available is True
     assert by_id["CVE-2023-0001"].remediation == "No fixed version available yet"
+    assert by_id["CVE-2023-0001"].fix_available is False
     assert by_id["CVE-2023-0002"].severity == Severity.INFO
     assert len(by_id["CVE-2022-48174"].description) <= 500
 
@@ -85,7 +87,13 @@ def test_parse_empty_report() -> None:
 
 def _finding(rule_id: str, severity: Severity, fixable: bool = True) -> Finding:
     remediation = "Upgrade x" if fixable else "No fixed version available yet"
-    return Finding(rule_id=rule_id, title=rule_id, severity=severity, remediation=remediation)
+    return Finding(
+        rule_id=rule_id,
+        title=rule_id,
+        severity=severity,
+        remediation=remediation,
+        fix_available=fixable,
+    )
 
 
 def test_prioritize_orders_by_severity_then_fixability() -> None:
