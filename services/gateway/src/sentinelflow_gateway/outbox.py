@@ -5,6 +5,7 @@ from typing import Protocol
 
 from sqlalchemy import select
 
+from sentinelflow_common.health import Heartbeat
 from sentinelflow_gateway.db import Database
 from sentinelflow_gateway.models import OutboxEvent, utcnow
 
@@ -48,8 +49,12 @@ class OutboxRelay:
             logger.info("relayed %d outbox event(s)", len(rows))
         return len(rows)
 
-    async def run(self, stop: asyncio.Event, poll_interval: float = 0.5) -> None:
+    async def run(
+        self, stop: asyncio.Event, poll_interval: float = 0.5, heartbeat: Heartbeat | None = None
+    ) -> None:
         while not stop.is_set():
+            if heartbeat is not None:
+                heartbeat.beat()
             try:
                 relayed = await self.publish_pending()
             except Exception:

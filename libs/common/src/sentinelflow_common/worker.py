@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 
 from sentinelflow_common.bus import AnyEvent, JetStreamBus, install_signal_handlers
 from sentinelflow_common.events import ScanCompleted, ScanRequested, Subjects, TargetType
+from sentinelflow_common.health import Heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ async def run_scanner_worker(
             stop,
             batch=batch,
             ack_wait=ack_wait,
+            heartbeat=Heartbeat(),
         )
     finally:
         await bus.close()

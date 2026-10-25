@@ -16,5 +16,6 @@ ENV PATH=/opt/venv/bin:$PATH \
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 COPY --from=builder /opt/venv /opt/venv
 USER 10001
-HEALTHCHECK --interval=30s --timeout=5s CMD ["python", "-c", "import sentinelflow_api_scanner"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s \
+    CMD ["python", "-m", "sentinelflow_common.health", "--max-age", "60"]
 CMD ["python", "-m", "sentinelflow_api_scanner.worker"]

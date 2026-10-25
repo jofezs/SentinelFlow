@@ -22,5 +22,7 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=builder /opt/venv /opt/venv
 USER 10001
-HEALTHCHECK --interval=30s --timeout=5s CMD ["trivy", "--version"]
+# The loop blocks for the duration of one image scan (up to the 600s scan timeout).
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s \
+    CMD ["python", "-m", "sentinelflow_common.health", "--max-age", "720"]
 CMD ["python", "-m", "sentinelflow_image_scanner.worker"]

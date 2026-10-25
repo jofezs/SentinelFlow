@@ -29,6 +29,7 @@ from sentinelflow_common.events import (
     decode_event,
     encode_event,
 )
+from sentinelflow_common.health import Heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ class JetStreamBus:
         batch: int = 10,
         ack_wait: float = 60.0,
         max_deliver: int = 5,
+        heartbeat: Heartbeat | None = None,
     ) -> None:
         """Pull messages from a durable consumer until ``stop`` is set."""
         sub = await self._js.pull_subscribe(
@@ -142,6 +144,8 @@ class JetStreamBus:
         logger.info("consuming %s as %s", subject, durable)
         try:
             while not stop.is_set():
+                if heartbeat is not None:
+                    heartbeat.beat()
                 try:
                     msgs = await sub.fetch(batch, timeout=1.0)
                 except (nats.errors.TimeoutError, TimeoutError):

@@ -25,7 +25,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentinelflow -d sentinelflow"]
+      # Check over TCP: during first-start init, Postgres runs a temporary
+      # socket-only server that would otherwise report "ready" too early.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sentinelflow -d sentinelflow"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -69,8 +71,11 @@ services:
     command: ["python", "-m", "sentinelflow_gateway.worker"]
     environment:
       <<: *common-env
-    healthcheck:
-      disable: true
+    healthcheck:  # no HTTP server in the worker: use its loop heartbeat instead
+      test: ["CMD", "python", "-m", "sentinelflow_common.health", "--max-age", "60"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
     restart: on-failure
     depends_on:
       migrate:

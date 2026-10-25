@@ -8,6 +8,7 @@ import logging
 
 from sentinelflow_common.bus import JetStreamBus, install_signal_handlers
 from sentinelflow_common.events import Subjects
+from sentinelflow_common.health import Heartbeat
 from sentinelflow_gateway.config import WorkerSettings
 from sentinelflow_gateway.db import Database
 from sentinelflow_gateway.ingest import ResultsIngester
@@ -28,14 +29,21 @@ async def main() -> None:
     stop = asyncio.Event()
     install_signal_handlers(stop)
     relay = OutboxRelay(database, bus, batch_size=settings.relay_batch_size)
+    heartbeat = Heartbeat()  # beaten by both loops; see sentinelflow_common.health
 
     logger.info("gateway worker started")
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(relay.run(stop, poll_interval=settings.relay_poll_interval))
+            tg.create_task(
+                relay.run(stop, poll_interval=settings.relay_poll_interval, heartbeat=heartbeat)
+            )
             tg.create_task(
                 bus.consume(
-                    Subjects.SCAN_COMPLETED, "gateway-results", ResultsIngester(database), stop
+                    Subjects.SCAN_COMPLETED,
+                    "gateway-results",
+                    ResultsIngester(database),
+                    stop,
+                    heartbeat=heartbeat,
                 )
             )
     finally:
