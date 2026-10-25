@@ -5,33 +5,31 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from sentinelflow_common.events import ScanRequested, Subjects, TargetType
-from sentinelflow_gateway.deps import ProjectDep, PublisherDep, SessionDep
-from sentinelflow_gateway.models import Scan, ScanState
-from sentinelflow_gateway.schemas import ScanCreate, ScanList, ScanRead
+from sentinelflow_gateway.deps import ProjectDep, SessionDep
+from sentinelflow_gateway.models import OutboxEvent, Scan, ScanState
+from sentinelflow_gateway.schemas import ScanCreate, ScanDetail, ScanList, ScanRead
 
 router = APIRouter(prefix="/v1/scans", tags=["scans"])
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
-async def submit_scan(
-    body: ScanCreate, project: ProjectDep, session: SessionDep, publisher: PublisherDep
-) -> ScanRead:
+async def submit_scan(body: ScanCreate, project: ProjectDep, session: SessionDep) -> ScanRead:
     """Queue a scan. Processing is asynchronous; poll GET /v1/scans/{id} for status."""
-    scan = Scan(project_id=project.id, target_type=body.target_type, target=body.target)
-    session.add(scan)
-    await session.commit()
-
-    # TODO(phase-2): publish via a transactional outbox so a broker outage
-    # cannot leave a committed scan without its event.
-    await publisher.publish(
-        Subjects.scan_requested(scan.target_type),
-        ScanRequested(
-            scan_id=scan.id,
-            project_id=project.id,
-            target_type=scan.target_type,
-            target=scan.target,
-        ),
+    scan = Scan(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        target_type=body.target_type,
+        target=body.target,
     )
+    event = ScanRequested(
+        scan_id=scan.id,
+        project_id=project.id,
+        target_type=body.target_type,
+        target=body.target,
+    )
+    # Scan row and its event commit atomically; the outbox relay publishes it.
+    session.add_all([scan, OutboxEvent.for_event(Subjects.scan_requested(body.target_type), event)])
+    await session.commit()
     return ScanRead.model_validate(scan)
 
 
@@ -63,11 +61,11 @@ async def list_scans(
 
 
 @router.get("/{scan_id}")
-async def get_scan(scan_id: uuid.UUID, project: ProjectDep, session: SessionDep) -> ScanRead:
+async def get_scan(scan_id: uuid.UUID, project: ProjectDep, session: SessionDep) -> ScanDetail:
     # Scoped by project: another tenant's scan is indistinguishable from a missing one.
     scan = await session.scalar(
         select(Scan).where(Scan.id == scan_id, Scan.project_id == project.id)
     )
     if scan is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scan not found")
-    return ScanRead.model_validate(scan)
+    return ScanDetail.model_validate(scan)

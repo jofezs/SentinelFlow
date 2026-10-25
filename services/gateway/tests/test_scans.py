@@ -2,20 +2,20 @@ import uuid
 
 import httpx
 import pytest
+from sqlalchemy import select
 
-from sentinelflow_common.events import ScanRequested
+from sentinelflow_common.events import ScanRequested, decode_event
+from sentinelflow_gateway.db import Database
+from sentinelflow_gateway.models import OutboxEvent
 
-from .conftest import RecordingPublisher, create_project
+from .conftest import create_project
 
 DIGEST = "sha256:" + "a" * 64
 
 
 class TestSubmitScan:
-    async def test_submit_image_scan_queues_and_publishes(
-        self,
-        client: httpx.AsyncClient,
-        api_headers: dict[str, str],
-        publisher: RecordingPublisher,
+    async def test_submit_image_scan_queues_and_writes_outbox(
+        self, client: httpx.AsyncClient, api_headers: dict[str, str], database: Database
     ) -> None:
         resp = await client.post(
             "/v1/scans", json={"target_type": "image", "target": "nginx:1.27"}, headers=api_headers
@@ -24,13 +24,28 @@ class TestSubmitScan:
         scan = resp.json()
         assert scan["status"] == "queued"
         assert scan["target"] == "nginx:1.27"
+        assert scan["finding_count"] == 0
 
-        assert len(publisher.published) == 1
-        subject, event = publisher.published[0]
-        assert subject == "scan.requested.image"
+        async with database.session() as session:
+            rows = (await session.scalars(select(OutboxEvent))).all()
+        assert len(rows) == 1
+        assert rows[0].subject == "scan.requested.image"
+        assert rows[0].published_at is None
+        event = decode_event(rows[0].payload)
         assert isinstance(event, ScanRequested)
+        assert event.event_id == rows[0].id
         assert str(event.scan_id) == scan["id"]
         assert str(event.project_id) == scan["project_id"]
+
+    async def test_rejected_scan_writes_no_outbox_event(
+        self, client: httpx.AsyncClient, api_headers: dict[str, str], database: Database
+    ) -> None:
+        resp = await client.post(
+            "/v1/scans", json={"target_type": "image", "target": "-rf"}, headers=api_headers
+        )
+        assert resp.status_code == 422
+        async with database.session() as session:
+            assert (await session.scalars(select(OutboxEvent))).all() == []
 
     @pytest.mark.parametrize(
         "target",
@@ -145,7 +160,10 @@ class TestReadScans:
         scan_id = await self._submit(client, api_headers, target_type="image", target="redis:7")
         resp = await client.get(f"/v1/scans/{scan_id}", headers=api_headers)
         assert resp.status_code == 200
-        assert resp.json()["target"] == "redis:7"
+        body = resp.json()
+        assert body["target"] == "redis:7"
+        assert body["findings"] == []
+        assert body["error"] is None
 
     async def test_unknown_scan_is_404(
         self, client: httpx.AsyncClient, api_headers: dict[str, str]

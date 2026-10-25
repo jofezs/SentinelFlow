@@ -1,4 +1,4 @@
-"""FastAPI dependencies: settings, DB sessions, publisher, and authentication."""
+"""FastAPI dependencies: settings, DB sessions, and authentication."""
 
 import secrets
 from collections.abc import AsyncIterator
@@ -13,7 +13,6 @@ from sqlalchemy.orm import joinedload
 from sentinelflow_gateway.config import Settings
 from sentinelflow_gateway.db import Database
 from sentinelflow_gateway.models import ApiKey, Project
-from sentinelflow_gateway.publisher import EventPublisher
 from sentinelflow_gateway.security import is_well_formed, lookup_prefix, verify_key
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -36,11 +35,6 @@ def get_database(request: Request) -> Database:
     return database
 
 
-def get_publisher(request: Request) -> EventPublisher:
-    publisher: EventPublisher = request.app.state.publisher
-    return publisher
-
-
 async def get_session(
     database: Annotated[Database, Depends(get_database)],
 ) -> AsyncIterator[AsyncSession]:
@@ -49,7 +43,6 @@ async def get_session(
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-PublisherDep = Annotated[EventPublisher, Depends(get_publisher)]
 
 
 async def require_project(

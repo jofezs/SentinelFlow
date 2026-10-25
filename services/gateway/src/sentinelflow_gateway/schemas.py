@@ -6,9 +6,9 @@ from datetime import datetime
 from typing import Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from sentinelflow_common.events import TargetType
+from sentinelflow_common.events import Finding, Severity, TargetType
 from sentinelflow_gateway.models import ScanState
 
 MAX_DOCKERFILE_CHARS = 64 * 1024
@@ -94,8 +94,22 @@ class ScanRead(_Response):
     target_type: TargetType
     target: str
     status: ScanState
+    scanner: str | None = None
+    max_severity: Severity | None = None
+    finding_count: int = 0
     created_at: datetime
     updated_at: datetime
+    completed_at: datetime | None = None
+
+
+class ScanDetail(ScanRead):
+    findings: list[Finding] = []
+    error: str | None = None
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def _none_to_empty(cls, value: object) -> object:
+        return [] if value is None else value
 
 
 class ScanList(BaseModel):

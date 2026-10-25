@@ -12,7 +12,6 @@ from sentinelflow_gateway import models  # noqa: F401
 from sentinelflow_gateway.config import Settings
 from sentinelflow_gateway.db import Base, Database
 from sentinelflow_gateway.main import create_app
-from sentinelflow_gateway.publisher import AnyEvent
 
 ADMIN_TOKEN = "test-admin-token-not-secret"
 ADMIN_HEADERS = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
@@ -23,18 +22,13 @@ TEST_DATABASE_URL = os.environ.get("SENTINELFLOW_TEST_DATABASE_URL", "sqlite+aio
 
 @dataclass
 class RecordingPublisher:
-    published: list[tuple[str, AnyEvent]] = field(default_factory=list)
+    published: list[tuple[str, bytes, str]] = field(default_factory=list)
+    fail_after: int | None = None
 
-    async def publish(self, subject: str, event: AnyEvent) -> None:
-        self.published.append((subject, event))
-
-    async def close(self) -> None:
-        return None
-
-
-@pytest.fixture
-def publisher() -> RecordingPublisher:
-    return RecordingPublisher()
+    async def publish(self, subject: str, payload: bytes, msg_id: str) -> None:
+        if self.fail_after is not None and len(self.published) >= self.fail_after:
+            raise ConnectionError("broker unavailable")
+        self.published.append((subject, payload, msg_id))
 
 
 @pytest.fixture
@@ -49,9 +43,9 @@ async def database() -> AsyncIterator[Database]:
 
 
 @pytest.fixture
-def app(database: Database, publisher: RecordingPublisher) -> FastAPI:
+def app(database: Database) -> FastAPI:
     settings = Settings(database_url=TEST_DATABASE_URL, admin_token=SecretStr(ADMIN_TOKEN))
-    return create_app(settings=settings, database=database, publisher=publisher)
+    return create_app(settings=settings, database=database)
 
 
 @pytest.fixture
@@ -72,3 +66,14 @@ async def create_project(client: httpx.AsyncClient, name: str) -> dict[str, str]
 async def api_headers(client: httpx.AsyncClient) -> dict[str, str]:
     project = await create_project(client, "default-project")
     return {"X-API-Key": project["api_key"]}
+
+
+async def submit_scan(
+    client: httpx.AsyncClient, headers: dict[str, str], target_type: str, target: str
+) -> dict[str, str]:
+    resp = await client.post(
+        "/v1/scans", json={"target_type": target_type, "target": target}, headers=headers
+    )
+    assert resp.status_code == 202, resp.text
+    body: dict[str, str] = resp.json()
+    return body

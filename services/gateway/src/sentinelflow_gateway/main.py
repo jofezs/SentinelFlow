@@ -7,15 +7,10 @@ from fastapi import FastAPI
 from sentinelflow_gateway import __version__
 from sentinelflow_gateway.config import Settings
 from sentinelflow_gateway.db import Database
-from sentinelflow_gateway.publisher import EventPublisher, LoggingPublisher
 from sentinelflow_gateway.routes import health, projects, scans
 
 
-def create_app(
-    settings: Settings | None = None,
-    database: Database | None = None,
-    publisher: EventPublisher | None = None,
-) -> FastAPI:
+def create_app(settings: Settings | None = None, database: Database | None = None) -> FastAPI:
     """Application factory. Run with: uvicorn sentinelflow_gateway.main:create_app --factory"""
     settings = settings or Settings()  # admin_token is read from the environment
     logging.basicConfig(
@@ -25,7 +20,6 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
-        await app.state.publisher.close()
         await app.state.database.dispose()
 
     app = FastAPI(
@@ -36,7 +30,6 @@ def create_app(
     )
     app.state.settings = settings
     app.state.database = database or Database(settings.database_url)
-    app.state.publisher = publisher or LoggingPublisher()
 
     app.include_router(health.router)
     app.include_router(projects.router)
