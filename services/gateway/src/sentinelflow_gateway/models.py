@@ -7,7 +7,13 @@ from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Index, String, Text, te
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from sentinelflow_common.events import ScanRequested, Severity, TargetType, encode_event
+from sentinelflow_common.events import (
+    AnyEvent,
+    PolicyConfig,
+    Severity,
+    TargetType,
+    encode_event,
+)
 from sentinelflow_gateway.db import Base
 
 _JSON = JSON().with_variant(JSONB(), "postgresql")
@@ -44,6 +50,11 @@ class Project(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(63), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Serialized PolicyConfig; NULL means the default (all policies, default params).
+    policy_config: Mapped[dict[str, Any] | None] = mapped_column(_JSON)
+
+    def policy(self) -> PolicyConfig:
+        return PolicyConfig.model_validate(self.policy_config or {})
 
 
 class ApiKey(Base):
@@ -84,6 +95,11 @@ class Scan(Base):
     error: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Populated when a policy.evaluated event is ingested. NULL = not (yet) evaluated.
+    policy_passed: Mapped[bool | None] = mapped_column()
+    policy_violations: Mapped[list[dict[str, Any]] | None] = mapped_column(_JSON)
+    policy_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     @property
     def finding_count(self) -> int:
         return len(self.findings or [])
@@ -112,5 +128,5 @@ class OutboxEvent(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @classmethod
-    def for_event(cls, subject: str, event: ScanRequested) -> Self:
+    def for_event(cls, subject: str, event: AnyEvent) -> Self:
         return cls(id=event.event_id, subject=subject, payload=encode_event(event).decode())

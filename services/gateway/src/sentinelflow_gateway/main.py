@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from sentinelflow_gateway import __version__
 from sentinelflow_gateway.config import Settings
 from sentinelflow_gateway.db import Database
-from sentinelflow_gateway.routes import health, projects, scans
+from sentinelflow_gateway.routes import health, policies, projects, scans
 
 
 def create_app(settings: Settings | None = None, database: Database | None = None) -> FastAPI:
@@ -33,5 +33,6 @@ def create_app(settings: Settings | None = None, database: Database | None = Non
 
     app.include_router(health.router)
     app.include_router(projects.router)
+    app.include_router(policies.router)
     app.include_router(scans.router)
     return app

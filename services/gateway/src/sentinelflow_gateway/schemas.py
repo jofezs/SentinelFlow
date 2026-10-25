@@ -3,12 +3,19 @@
 import re
 import uuid
 from datetime import datetime
-from typing import Self
+from typing import Any, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from sentinelflow_common.events import Finding, Severity, TargetType
+from sentinelflow_common.events import (
+    Finding,
+    PolicyConfig,
+    PolicyViolation,
+    Severity,
+    TargetType,
+)
+from sentinelflow_common.policies import validate_config
 from sentinelflow_gateway.models import ScanState
 
 MAX_DOCKERFILE_CHARS = 64 * 1024
@@ -97,6 +104,9 @@ class ScanRead(_Response):
     scanner: str | None = None
     max_severity: Severity | None = None
     finding_count: int = 0
+    policy_passed: bool | None = Field(
+        default=None, description="null until the policy engine has evaluated the scan"
+    )
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
@@ -105,11 +115,39 @@ class ScanRead(_Response):
 class ScanDetail(ScanRead):
     findings: list[Finding] = []
     error: str | None = None
+    policy_violations: list[PolicyViolation] = []
+    policy_evaluated_at: datetime | None = None
 
-    @field_validator("findings", mode="before")
+    @field_validator("findings", "policy_violations", mode="before")
     @classmethod
     def _none_to_empty(cls, value: object) -> object:
         return [] if value is None else value
+
+
+class PolicyRead(BaseModel):
+    id: str
+    title: str
+    description: str
+    applies_to: list[TargetType]
+    params_schema: dict[str, Any] | None = Field(
+        description="JSON Schema of the policy's parameters (null if it takes none)"
+    )
+
+
+class PolicyConfigRead(BaseModel):
+    enabled: list[str] | None = Field(description="Enabled policy IDs; null means all policies")
+    params: dict[str, dict[str, Any]]
+
+
+class PolicyConfigUpdate(_Request):
+    enabled: list[str] | None = Field(default=None, examples=[["severity_threshold", "no_secrets"]])
+    params: dict[str, dict[str, Any]] = Field(
+        default_factory=dict, examples=[{"severity_threshold": {"fail_on": "high"}}]
+    )
+
+    def to_config(self) -> PolicyConfig:
+        """Validate against the policy catalog (raises ValueError)."""
+        return validate_config(self.enabled, self.params)
 
 
 class ScanList(BaseModel):

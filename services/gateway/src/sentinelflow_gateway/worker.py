@@ -29,7 +29,8 @@ async def main() -> None:
     stop = asyncio.Event()
     install_signal_handlers(stop)
     relay = OutboxRelay(database, bus, batch_size=settings.relay_batch_size)
-    heartbeat = Heartbeat()  # beaten by both loops; see sentinelflow_common.health
+    ingester = ResultsIngester(database)
+    heartbeat = Heartbeat()  # beaten by every loop; see sentinelflow_common.health
 
     logger.info("gateway worker started")
     try:
@@ -37,15 +38,11 @@ async def main() -> None:
             tg.create_task(
                 relay.run(stop, poll_interval=settings.relay_poll_interval, heartbeat=heartbeat)
             )
-            tg.create_task(
-                bus.consume(
-                    Subjects.SCAN_COMPLETED,
-                    "gateway-results",
-                    ResultsIngester(database),
-                    stop,
-                    heartbeat=heartbeat,
-                )
-            )
+            for subject, durable in (
+                (Subjects.SCAN_COMPLETED, "gateway-results"),
+                (Subjects.POLICY_EVALUATED, "gateway-policy"),
+            ):
+                tg.create_task(bus.consume(subject, durable, ingester, stop, heartbeat=heartbeat))
     finally:
         await bus.close()
         await database.dispose()

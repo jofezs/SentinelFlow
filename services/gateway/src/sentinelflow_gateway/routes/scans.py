@@ -39,6 +39,7 @@ async def list_scans(
     session: SessionDep,
     status_filter: Annotated[ScanState | None, Query(alias="status")] = None,
     target_type: TargetType | None = None,
+    policy_passed: bool | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ScanList:
@@ -47,6 +48,8 @@ async def list_scans(
         query = query.where(Scan.status == status_filter)
     if target_type is not None:
         query = query.where(Scan.target_type == target_type)
+    if policy_passed is not None:
+        query = query.where(Scan.policy_passed.is_(policy_passed))
 
     total = await session.scalar(select(func.count()).select_from(query.subquery()))
     rows = await session.scalars(
