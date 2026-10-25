@@ -57,7 +57,7 @@ Services communicate only through versioned event contracts defined in
 
 - [x] **Phase 0** – Repo tooling, CI, shared event contracts
 - [x] **Phase 1** – API gateway (FastAPI + PostgreSQL, API-key auth)
-- [ ] **Phase 2** – Event bus + Dockerfile scanner, `docker compose` stack
+- [x] **Phase 2** – Event bus (NATS JetStream), transactional outbox, Dockerfile scanner
 - [ ] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
 - [ ] **Phase 4** – Policy engine (OPA/Rego)
 - [ ] **Phase 5** – Webhook notifier (HMAC-signed, retries) + Prometheus/Grafana
@@ -75,6 +75,22 @@ docker compose up --build -d --wait
 ```
 
 Interactive API docs: <http://localhost:8000/docs>
+
+Run the end-to-end smoke test (submits an insecure Dockerfile and checks the findings):
+
+```bash
+python scripts/smoke_test.py
+```
+
+```
+status=completed max_severity=critical findings=7
+  [critical] SF002   line 2   Secret 'DB_PASSWORD' hard-coded in ENV
+  [    high] SF001   line 1   Container runs as root (no USER instruction)
+  [    high] SF005   line 3   Remote script piped directly into a shell
+  [  medium] DL3007  line 1   Using latest is prone to errors if the image will ever update...
+  [  medium] SF008   line 4   SSH port 22 exposed
+  ...
+```
 
 ```bash
 # 1. Create a project (admin). The response contains an API key, shown only once.
@@ -114,6 +130,46 @@ curl -s localhost:8000/v1/scans/$SCAN_ID -H "X-API-Key: $API_KEY"
 - **Container hardening**: multi-stage build, non-root UID, no shell for the runtime user, ports
   bound to localhost in Compose.
 
+### Event flow and delivery guarantees
+
+```
+POST /v1/scans ─▶ [scans + outbox_events]   ◀── single DB transaction
+                          │
+        gateway-worker: outbox relay ──▶ NATS JetStream  (dedup on Nats-Msg-Id)
+                                              │ scan.requested.dockerfile
+                                     scanner-dockerfile (Hadolint + SF rules)
+                                              │ scan.completed
+        gateway-worker: results ingester ◀────┘ ──▶ scans.status / findings
+```
+
+- **Transactional outbox**: the scan row and its event commit together, so a broker outage can
+  never leave a scan without its event. Relay rows are claimed with `FOR UPDATE SKIP LOCKED`, so
+  worker replicas scale horizontally.
+- **At-least-once + idempotency**: publishers set `Nats-Msg-Id` (JetStream drops duplicates);
+  the results ingester ignores results for scans already in a terminal state.
+- **Poison messages** are terminated rather than retried forever; handler failures are redelivered
+  with exponential backoff (capped at `max_deliver`).
+- **Graceful shutdown**: workers drain on SIGTERM (Kubernetes pod termination).
+
+### Dockerfile rules
+
+Hadolint covers build best practices; SentinelFlow adds security-focused rules:
+
+| ID | Severity | Detects |
+|---|---|---|
+| SF001 | High | Final stage runs as root (no `USER`, or `USER root`) |
+| SF002 | Critical | Secrets hard-coded in `ENV` (value is never echoed into the finding) |
+| SF003 | Critical / Medium | Secrets passed as build `ARG` (with / without default) |
+| SF004 | Medium | `ADD <url>` without `--checksum` |
+| SF005 | High | `curl \| sh` / `wget \| bash` |
+| SF006 | High | TLS verification disabled (`curl -k`, `--no-check-certificate`, `strict-ssl false`, ...) |
+| SF007 | Medium | World-writable permissions (`chmod 777`) |
+| SF008 | Medium | SSH port 22 exposed |
+| SF009 | Low | No `HEALTHCHECK` |
+
+Untrusted Dockerfiles are passed to Hadolint on **stdin** via `exec` (no shell, no temp files),
+with a timeout.
+
 ## Development
 
 Requirements: Python 3.12, Docker Desktop. Later phases also use kind and Helm.
@@ -126,12 +182,19 @@ pre-commit install
 
 pytest                                         # tests (in-memory SQLite by default)
 ruff check . && ruff format --check .          # lint
-mypy libs/common/src services/gateway/src      # types
+mypy libs/common/src services/gateway/src services/scanner-dockerfile/src
 ```
 
-Run the tests against Postgres (as CI does) by setting
-`SENTINELFLOW_TEST_DATABASE_URL=postgresql+asyncpg://...`. CI also runs `alembic check` to
-guarantee migrations match the ORM models.
+With the Compose stack running, run the suite against real Postgres and NATS (as CI does):
+
+```bash
+export SENTINELFLOW_TEST_DATABASE_URL=postgresql+asyncpg://sentinelflow:sentinelflow@127.0.0.1:5432/sentinelflow_test
+export SENTINELFLOW_TEST_NATS_URL=nats://127.0.0.1:4222
+pytest
+```
+
+CI also runs `alembic check` (migrations must match the ORM models) and the end-to-end smoke test
+against the full Compose stack.
 
 ## Responsible use
 

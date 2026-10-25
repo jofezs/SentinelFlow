@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -11,6 +11,9 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  HADOLINT_VERSION: v2.12.0
 
 jobs:
   lint-and-test:
@@ -28,9 +31,10 @@ jobs:
           --health-cmd "pg_isready -U sentinelflow"
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
-      # Run the test suite against real Postgres, not just SQLite.
+      # Run the test suite against real Postgres and NATS, not just in-memory fakes.
       SENTINELFLOW_TEST_DATABASE_URL: postgresql+asyncpg://sentinelflow:sentinelflow@localhost:5432/sentinelflow_test
       SENTINELFLOW_DATABASE_URL: postgresql+asyncpg://sentinelflow:sentinelflow@localhost:5432/sentinelflow
+      SENTINELFLOW_TEST_NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +46,15 @@ jobs:
             requirements-dev.txt
             **/pyproject.toml
 
+      - name: Start NATS with JetStream
+        run: docker run -d --name nats -p 4222:4222 nats:2.10-alpine -js
+
+      - name: Install hadolint
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          sudo chmod +x /usr/local/bin/hadolint
+
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
@@ -52,13 +65,16 @@ jobs:
         run: ruff format --check .
 
       - name: Mypy
-        run: mypy libs/common/src services/gateway/src
+        run: mypy libs/common/src services/gateway/src services/scanner-dockerfile/src
 
       - name: Create test database
         run: PGPASSWORD=sentinelflow psql -h localhost -U sentinelflow -c "CREATE DATABASE sentinelflow_test"
 
       - name: Pytest
-        run: pytest --cov=sentinelflow_common --cov=sentinelflow_gateway --cov-report=term-missing
+        run: >-
+          pytest
+          --cov=sentinelflow_common --cov=sentinelflow_gateway --cov=sentinelflow_dockerfile_scanner
+          --cov-report=term-missing
 
       - name: Migrations apply cleanly and match models
         working-directory: services/gateway
@@ -68,16 +84,43 @@ jobs:
           alembic downgrade base
 
   docker-build:
-    name: Build gateway image
+    name: Build ${{ matrix.service }} image
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway, scanner-dockerfile]
     steps:
       - uses: actions/checkout@v4
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
-          dockerfile: services/gateway/Dockerfile
+          dockerfile: services/${{ matrix.service }}/Dockerfile
       - name: Build
-        run: docker build -f services/gateway/Dockerfile -t sentinelflow/gateway:ci .
+        run: docker build -f services/${{ matrix.service }}/Dockerfile -t sentinelflow/${{ matrix.service }}:ci .
+
+  e2e:
+    name: End-to-end (docker compose)
+    runs-on: ubuntu-latest
+    needs: [lint-and-test]
+    env:
+      SENTINELFLOW_ADMIN_TOKEN: ci-only-admin-token-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start stack
+        run: docker compose up --build -d --wait
+      - name: Smoke test
+        run: |
+          pip install httpx
+          python scripts/smoke_test.py
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
 
   secret-scan:
     name: Secret scan (gitleaks)

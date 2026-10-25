@@ -1,6 +1,7 @@
 # Local development stack.  Usage:
 #   cp .env.example .env   (then set SENTINELFLOW_ADMIN_TOKEN)
-#   docker compose up --build
+#   docker compose up --build -d --wait
+#   python scripts/smoke_test.py
 
 x-gateway-image: &gateway-build
   build:
@@ -8,8 +9,9 @@ x-gateway-image: &gateway-build
     dockerfile: services/gateway/Dockerfile
   image: sentinelflow/gateway:dev
 
-x-db-url: &db-url
+x-common-env: &common-env
   SENTINELFLOW_DATABASE_URL: postgresql+asyncpg://sentinelflow:sentinelflow@postgres:5432/sentinelflow
+  SENTINELFLOW_NATS_URL: nats://nats:4222
 
 services:
   postgres:
@@ -28,11 +30,25 @@ services:
       timeout: 3s
       retries: 10
 
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"  # monitoring: http://localhost:8222/jsz
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   migrate:
     <<: *gateway-build
     command: ["alembic", "upgrade", "head"]
     environment:
-      <<: *db-url
+      <<: *common-env
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,7 +56,7 @@ services:
   gateway:
     <<: *gateway-build
     environment:
-      <<: *db-url
+      <<: *common-env
       SENTINELFLOW_ADMIN_TOKEN: ${SENTINELFLOW_ADMIN_TOKEN:?set SENTINELFLOW_ADMIN_TOKEN in .env}
     ports:
       - "127.0.0.1:8000:8000"
@@ -48,5 +64,32 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  gateway-worker:
+    <<: *gateway-build
+    command: ["python", "-m", "sentinelflow_gateway.worker"]
+    environment:
+      <<: *common-env
+    healthcheck:
+      disable: true
+    restart: on-failure
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  scanner-dockerfile:
+    build:
+      context: .
+      dockerfile: services/scanner-dockerfile/Dockerfile
+    image: sentinelflow/scanner-dockerfile:dev
+    environment:
+      <<: *common-env
+    restart: on-failure
+    depends_on:
+      nats:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  natsdata:
