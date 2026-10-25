@@ -56,7 +56,7 @@ Services communicate only through versioned event contracts defined in
 ## Roadmap
 
 - [x] **Phase 0** – Repo tooling, CI, shared event contracts
-- [ ] **Phase 1** – API gateway (FastAPI + PostgreSQL, API-key auth)
+- [x] **Phase 1** – API gateway (FastAPI + PostgreSQL, API-key auth)
 - [ ] **Phase 2** – Event bus + Dockerfile scanner, `docker compose` stack
 - [ ] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
 - [ ] **Phase 4** – Policy engine (OPA/Rego)
@@ -65,7 +65,56 @@ Services communicate only through versioned event contracts defined in
 - [ ] **Phase 7** – Full CI/CD: image build, self-scan, e2e on kind, signed releases
 - [ ] **Phase 8** – Threat model, docs, demo
 
-## Local development
+## Quick start
+
+Requirements: Docker Desktop.
+
+```bash
+cp .env.example .env          # then set SENTINELFLOW_ADMIN_TOKEN to a long random value
+docker compose up --build -d --wait
+```
+
+Interactive API docs: <http://localhost:8000/docs>
+
+```bash
+# 1. Create a project (admin). The response contains an API key, shown only once.
+curl -s -X POST localhost:8000/v1/projects \
+  -H "Authorization: Bearer $SENTINELFLOW_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"name": "demo"}'
+
+# 2. Submit a scan with the project's API key
+curl -s -X POST localhost:8000/v1/scans \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"target_type": "image", "target": "nginx:1.27"}'
+
+# 3. Check status
+curl -s localhost:8000/v1/scans/$SCAN_ID -H "X-API-Key: $API_KEY"
+```
+
+### API overview
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/v1/projects` | Admin bearer token | Create a project and its API key |
+| `GET` | `/v1/projects/me` | API key | Current project |
+| `POST` | `/v1/scans` | API key | Submit an image, Dockerfile, or API endpoint (202 Accepted) |
+| `GET` | `/v1/scans` | API key | List scans (`status`, `target_type`, `limit`, `offset`) |
+| `GET` | `/v1/scans/{id}` | API key | Scan details |
+| `GET` | `/healthz`, `/readyz` | — | Liveness / readiness probes |
+
+### Security design (gateway)
+
+- **API keys** are 256-bit random tokens; only a SHA-256 hash and a lookup prefix are stored, and
+  comparisons are constant-time.
+- **Tenant isolation**: every query is scoped to the caller's project; another tenant's scan
+  returns `404`, not `403`, so IDs can't be probed.
+- **Strict input validation**: image references follow Docker's grammar and must start with an
+  alphanumeric (blocking CLI flag injection into scanners); URLs must be http(s) with no embedded
+  credentials; request bodies reject unknown fields.
+- **Container hardening**: multi-stage build, non-root UID, no shell for the runtime user, ports
+  bound to localhost in Compose.
+
+## Development
 
 Requirements: Python 3.12, Docker Desktop. Later phases also use kind and Helm.
 
@@ -75,10 +124,14 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 pre-commit install
 
-pytest              # run tests
-ruff check .        # lint
-mypy libs/common/src
+pytest                                         # tests (in-memory SQLite by default)
+ruff check . && ruff format --check .          # lint
+mypy libs/common/src services/gateway/src      # types
 ```
+
+Run the tests against Postgres (as CI does) by setting
+`SENTINELFLOW_TEST_DATABASE_URL=postgresql+asyncpg://...`. CI also runs `alembic check` to
+guarantee migrations match the ORM models.
 
 ## Responsible use
 

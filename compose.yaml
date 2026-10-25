@@ -1,0 +1,52 @@
+# Local development stack.  Usage:
+#   cp .env.example .env   (then set SENTINELFLOW_ADMIN_TOKEN)
+#   docker compose up --build
+
+x-gateway-image: &gateway-build
+  build:
+    context: .
+    dockerfile: services/gateway/Dockerfile
+  image: sentinelflow/gateway:dev
+
+x-db-url: &db-url
+  SENTINELFLOW_DATABASE_URL: postgresql+asyncpg://sentinelflow:sentinelflow@postgres:5432/sentinelflow
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: sentinelflow
+      POSTGRES_PASSWORD: sentinelflow
+      POSTGRES_DB: sentinelflow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinelflow -d sentinelflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *gateway-build
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *db-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    <<: *gateway-build
+    environment:
+      <<: *db-url
+      SENTINELFLOW_ADMIN_TOKEN: ${SENTINELFLOW_ADMIN_TOKEN:?set SENTINELFLOW_ADMIN_TOKEN in .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
