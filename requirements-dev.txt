@@ -1,5 +1,6 @@
 -e ./libs/common
 -e ./services/gateway
+-e ./services/scanner-dockerfile
 pytest>=8.3
 pytest-asyncio>=0.24
 pytest-cov>=5.0

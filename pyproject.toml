@@ -18,7 +18,11 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["sentinelflow_common", "sentinelflow_gateway"]
+known-first-party = [
+  "sentinelflow_common",
+  "sentinelflow_gateway",
+  "sentinelflow_dockerfile_scanner",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "S105", "S106"]  # asserts and fake secrets are fine in tests
@@ -28,7 +32,7 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 explicit_package_bases = true
-mypy_path = "libs/common/src,services/gateway/src"
+mypy_path = "libs/common/src,services/gateway/src,services/scanner-dockerfile/src"
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --import-mode=importlib"

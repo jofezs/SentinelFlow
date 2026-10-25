@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelflow-scanner-dockerfile"
+version = "0.1.0"
+description = "SentinelFlow Dockerfile scanner: Hadolint plus security-focused custom rules"
+requires-python = ">=3.12"
+dependencies = ["sentinelflow-common", "pydantic-settings>=2.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
