@@ -122,6 +122,28 @@ services:
       nats:
         condition: service_healthy
 
+  opa:
+    build:
+      context: .
+      dockerfile: services/policy-engine/opa.Dockerfile
+    image: sentinelflow/policy-opa:dev
+    # Not published to the host: only the policy engine talks to OPA.
+
+  policy-engine:
+    build:
+      context: .
+      dockerfile: services/policy-engine/Dockerfile
+    image: sentinelflow/policy-engine:dev
+    environment:
+      <<: *common-env
+      SENTINELFLOW_OPA_URL: http://opa:8181
+    restart: on-failure
+    depends_on:
+      nats:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+
 volumes:
   pgdata:
   natsdata:

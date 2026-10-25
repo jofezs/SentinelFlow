@@ -59,7 +59,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 1** – API gateway (FastAPI + PostgreSQL, API-key auth)
 - [x] **Phase 2** – Event bus (NATS JetStream), transactional outbox, Dockerfile scanner
 - [x] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
-- [ ] **Phase 4** – Policy engine (OPA/Rego)
+- [x] **Phase 4** – Policy engine (OPA/Rego), per-project policy configuration
 - [ ] **Phase 5** – Webhook notifier (HMAC-signed, retries) + Prometheus/Grafana
 - [ ] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies
 - [ ] **Phase 7** – Full CI/CD: image build, self-scan, e2e on kind, signed releases
@@ -124,7 +124,9 @@ curl -s localhost:8000/v1/scans/$SCAN_ID -H "X-API-Key: $API_KEY"
 | `GET` | `/v1/projects/me` | API key | Current project |
 | `POST` | `/v1/scans` | API key | Submit an image, Dockerfile, or API endpoint (202 Accepted) |
 | `GET` | `/v1/scans` | API key | List scans (`status`, `target_type`, `limit`, `offset`) |
-| `GET` | `/v1/scans/{id}` | API key | Scan details |
+| `GET` | `/v1/scans/{id}` | API key | Scan details, findings, and policy decision |
+| `GET` | `/v1/policies` | API key | Policy catalog (with parameter JSON Schemas) |
+| `GET` / `PUT` | `/v1/projects/me/policy` | API key | Project's enabled policies and parameters |
 | `GET` | `/healthz`, `/readyz` | — | Liveness / readiness probes |
 
 ### Security design (gateway)
@@ -145,10 +147,14 @@ curl -s localhost:8000/v1/scans/$SCAN_ID -H "X-API-Key: $API_KEY"
 POST /v1/scans ─▶ [scans + outbox_events]   ◀── single DB transaction
                           │
         gateway-worker: outbox relay ──▶ NATS JetStream  (dedup on Nats-Msg-Id)
-                                              │ scan.requested.dockerfile
-                                     scanner-dockerfile (Hadolint + SF rules)
+                                              │ scan.requested.<target>
+                                     scanner-{dockerfile,image,api}
                                               │ scan.completed
-        gateway-worker: results ingester ◀────┘ ──▶ scans.status / findings
+        gateway-worker: ingester ◀────────────┘ ──▶ findings + outbox "policy.requested"
+                                              │     (with the project's policy config snapshot)
+                                     policy-engine ──HTTP──▶ OPA sidecar (Rego)
+                                              │ policy.evaluated
+        gateway-worker: ingester ◀────────────┘ ──▶ scans.policy_passed / violations
 ```
 
 - **Transactional outbox**: the scan row and its event commit together, so a broker outage can
@@ -211,6 +217,41 @@ enforced at the connection layer rather than as an up-front URL check:
 | API015 | Version disclosure (`Server`, `X-Powered-By`) |
 | API016 | Cookies without `Secure` / `HttpOnly` / `SameSite` |
 | API020–023 | CORS: arbitrary origin reflection (critical with credentials), `null`, `*` |
+
+### Policy engine (OPA / Rego)
+
+Findings are judged by policy-as-code written in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/)
+([`services/policy-engine/policies`](services/policy-engine/policies)). Each policy is its own
+package declaring the target types it applies to; a `decision` package combines the policies a
+project has enabled into `{allow, violations, evaluated}`.
+
+| Policy | Applies to | Fails when |
+|---|---|---|
+| `severity_threshold` | all | any finding ≥ `fail_on` (default `critical`) |
+| `no_secrets` | Dockerfile, image | secrets in `ENV`/`ARG` or found by Trivy in image layers |
+| `no_root_container` | Dockerfile | final stage runs as root |
+| `supply_chain` | Dockerfile | `curl \| sh`, unverified remote `ADD`, disabled TLS verification |
+| `no_fixable_vulns` | image | CVEs ≥ `min_severity` (default `high`) that have a fix available |
+| `https_required` | API | plaintext HTTP, weak TLS, invalid certificate |
+| `hsts_required` | API | missing `Strict-Transport-Security` |
+| `cors_restricted` | API | reflected / `null` / credentialed-wildcard CORS |
+
+```bash
+# Only enforce two policies, with a stricter threshold
+curl -X PUT localhost:8000/v1/projects/me/policy -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": ["severity_threshold", "no_secrets"], "params": {"severity_threshold": {"fail_on": "high"}}}'
+```
+
+Design notes:
+
+- **Stateless engine, snapshot config**: the policy request carries the project's config at
+  evaluation time, so every decision records exactly which rules it was judged against.
+- **Fail closed**: if OPA is unreachable or the decision is undefined, the request is retried;
+  a scan is never marked as passing without an actual decision. OPA output is strictly validated.
+- **Policies ship in the image** (`opa.Dockerfile`), so what runs is exactly what CI tested.
+  CI runs `opa fmt`, `opa check --strict`, and `opa test`, and a Python test asserts the Rego
+  packages match the API's policy catalog.
 
 ## Development
 

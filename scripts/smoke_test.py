@@ -27,6 +27,13 @@ EXPOSE 22
 CMD ["/start.sh"]
 """
 
+HARDENED_DOCKERFILE = """\
+FROM python:3.12-slim
+USER 10001
+HEALTHCHECK CMD ["python", "-c", "print('ok')"]
+CMD ["python", "-m", "http.server"]
+"""
+
 Scan = dict[str, Any]
 
 
@@ -40,6 +47,14 @@ class Case:
     target_type: str
     target: str
     check: Callable[[Scan], str | None]  # returns an error message, or None if OK
+    policy_passed: bool | None = None  # expected decision (None: no evaluation expected)
+    violated: frozenset[str] = frozenset()  # policies that must appear in the violations
+
+    def check_policy(self, scan: Scan) -> str | None:
+        if scan["policy_passed"] is not self.policy_passed:
+            return f"expected policy_passed={self.policy_passed}, got {scan['policy_passed']}"
+        missing = self.violated - {v["policy_id"] for v in scan["policy_violations"]}
+        return f"expected policy violations {sorted(missing)}" if missing else None
 
 
 def _expect_rules(*rules: str) -> Callable[[Scan], str | None]:
@@ -74,11 +89,29 @@ CASES = [
     Case(
         "dockerfile", "dockerfile", INSECURE_DOCKERFILE,
         _expect_rules("SF001", "SF002", "SF005", "SF008", "DL3007"),
+        policy_passed=False,
+        violated=frozenset(
+            {"severity_threshold", "no_secrets", "no_root_container", "supply_chain"}
+        ),
     ),
-    Case("image", "image", "alpine:3.18.0", _expect_cves),
-    Case("api", "api_endpoint", "https://example.com/", _expect_completed),
+    Case("hardened", "dockerfile", HARDENED_DOCKERFILE, _expect_completed, policy_passed=True),
+    Case(
+        "image", "image", "alpine:3.18.0", _expect_cves,
+        policy_passed=False, violated=frozenset({"severity_threshold", "no_fixable_vulns"}),
+    ),
+    Case(
+        "api", "api_endpoint", "https://example.com/", _expect_completed,
+        policy_passed=False, violated=frozenset({"hsts_required"}),
+    ),
     Case("ssrf", "api_endpoint", "http://169.254.169.254/latest/meta-data/", _expect_blocked),
 ]  # fmt: skip
+
+
+def _finished(scan: Scan) -> bool:
+    """Failed scans are final; completed scans are final once the policy decision is in."""
+    return scan["status"] == "failed" or (
+        scan["status"] == "completed" and scan["policy_passed"] is not None
+    )
 
 
 def _admin_token() -> str:
@@ -98,10 +131,14 @@ def _print_scan(name: str, scan: Scan) -> None:
         f"\n[{name}] {scan['target'][:60]!r} -> {scan['status']} "
         f"(max={scan['max_severity']}, findings={scan['finding_count']}) {scan['error'] or ''}"
     )
-    for f in scan["findings"][:6]:
+    for f in scan["findings"][:4]:
         print(f"  [{f['severity']:>8}] {f['rule_id']:<16} {f['title'][:70]}")
-    if scan["finding_count"] > 6:
-        print(f"  ... and {scan['finding_count'] - 6} more")
+    if scan["finding_count"] > 4:
+        print(f"  ... and {scan['finding_count'] - 4} more")
+    if scan["policy_passed"] is not None:
+        print(f"  policy: {'PASSED' if scan['policy_passed'] else 'FAILED'}")
+        for v in scan["policy_violations"]:
+            print(f"    x {v['policy_id']:<20} [{v['severity']}] {v['message'][:70]}")
 
 
 def main() -> int:
@@ -137,7 +174,7 @@ def main() -> int:
         while pending and time.monotonic() < deadline:
             for scan_id in list(pending):
                 scan = client.get(f"/v1/scans/{scan_id}", headers=headers).json()
-                if scan["status"] in {"completed", "failed"}:
+                if _finished(scan):
                     results[pending.pop(scan_id).name] = scan
             time.sleep(1)
 
@@ -145,8 +182,9 @@ def main() -> int:
     for case in cases:
         if case.name in results:
             _print_scan(case.name, results[case.name])
-            if error := case.check(results[case.name]):
-                failures.append(f"{case.name}: {error}")
+            for error in (case.check(results[case.name]), case.check_policy(results[case.name])):
+                if error:
+                    failures.append(f"{case.name}: {error}")
 
     print()
     for failure in failures:
