@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentinelflow-common"
-version = "0.1.0"
-description = "Shared event schemas and utilities for SentinelFlow services"
+version = "0.2.0"
+description = "Shared event schemas and messaging for SentinelFlow services"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.9"]
+dependencies = ["pydantic>=2.9", "nats-py>=2.9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
