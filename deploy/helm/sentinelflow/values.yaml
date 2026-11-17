@@ -1,0 +1,154 @@
+# Default values for the SentinelFlow chart.
+
+image:
+  registry: ""             # e.g. ghcr.io/jofezs  (empty = local images, e.g. loaded into kind)
+  prefix: sentinelflow/     # image = <registry>/<prefix><component image>:<tag>
+  tag: dev
+  pullPolicy: IfNotPresent
+
+logLevel: INFO
+
+secrets:
+  # Use an existing Secret with keys "admin-token" and "postgres-password" (recommended in
+  # production, e.g. synced from a vault). Otherwise the chart creates one.
+  existingSecret: ""
+  adminToken: ""            # required unless existingSecret is set
+  postgresPassword: ""      # generated once and preserved across upgrades if empty
+
+# Every application service is one entry here; a single template renders each into a
+# Deployment (plus HPA when autoscaling is enabled). Capability flags drive both the
+# environment and the NetworkPolicies:
+#   database: needs Postgres     nats: needs the message bus
+#   internet: may reach public IPs (private ranges are always excluded)
+components:
+  gateway:
+    enabled: true
+    image: gateway
+    replicas: 2
+    port: 8000
+    probe: http
+    database: true
+    adminToken: true
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 256Mi }
+
+  gateway-worker:
+    enabled: true
+    image: gateway
+    command: ["python", "-m", "sentinelflow_gateway.worker"]
+    replicas: 1
+    database: true
+    nats: true
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 256Mi }
+
+  notifier:
+    enabled: true
+    image: gateway
+    command: ["python", "-m", "sentinelflow_gateway.notifier"]
+    replicas: 1
+    database: true
+    internet: true
+    env: {}
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { memory: 192Mi }
+
+  scanner-dockerfile:
+    enabled: true
+    image: scanner-dockerfile
+    nats: true
+    autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 4, targetCPU: 70 }
+    resources:
+      requests: { cpu: 100m, memory: 96Mi }
+      limits: { memory: 256Mi }
+
+  scanner-image:
+    enabled: true
+    image: scanner-image
+    nats: true
+    internet: true
+    heartbeatMaxAge: 720    # one image scan can block the loop for up to the scan timeout
+    writablePaths: ["/var/cache/trivy"]
+    autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 4, targetCPU: 70 }
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 2Gi }
+
+  scanner-api:
+    enabled: true
+    image: scanner-api
+    nats: true
+    internet: true
+    autoscaling: { enabled: true, minReplicas: 1, maxReplicas: 4, targetCPU: 70 }
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { memory: 192Mi }
+
+  policy-engine:
+    enabled: true
+    image: policy-engine
+    replicas: 1
+    nats: true
+    opaSidecar: true        # OPA runs in the same pod, reached on localhost:8181
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { memory: 192Mi }
+
+opa:
+  image: policy-opa
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
+
+migrations:
+  enabled: true             # Helm hook Job: post-install and pre-upgrade
+
+gatewayService:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  host: sentinelflow.local
+  tls: []                   # e.g. [{ secretName: sentinelflow-tls, hosts: [sentinelflow.local] }]
+
+# Bundled single-instance Postgres and NATS for development and demos. In production,
+# disable these and point the services at managed equivalents.
+postgres:
+  enabled: true
+  image: postgres:17-alpine
+  storage: 1Gi
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+nats:
+  enabled: true
+  image: nats:2.10-alpine
+  storage: 1Gi
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+networkPolicy:
+  enabled: true
+  # Namespaces labelled like this may scrape the metrics port (9100) of every pod.
+  metricsNamespaceLabel: { sentinelflow.io/monitoring: "true" }
+  # Never reachable through the "internet" egress rule (SSRF defence in depth).
+  privateRanges:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+    - 127.0.0.0/8
+  internetPorts: [80, 443, 8080, 8443]
+
+# Example webhook receiver for demos and the e2e test (never enable in production).
+webhookReceiver:
+  enabled: false
+  image: webhook-receiver

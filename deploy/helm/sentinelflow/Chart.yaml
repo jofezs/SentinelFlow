@@ -1,0 +1,9 @@
+apiVersion: v2
+name: sentinelflow
+description: Automated cloud security audit engine - scanners, policy engine, and alerting
+type: application
+version: 0.1.0
+appVersion: "0.5.0"
+keywords: [security, scanning, compliance, opa, trivy]
+home: https://github.com/jofezs/SentinelFlow
+sources: [https://github.com/jofezs/SentinelFlow]

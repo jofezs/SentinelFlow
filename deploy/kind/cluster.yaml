@@ -1,0 +1,10 @@
+# Local Kubernetes cluster for SentinelFlow:  kind create cluster --config deploy/kind/cluster.yaml
+#
+# The node image is pinned by digest. kindest/node:v1.37.0 (kind v0.33's default)
+# segfaults on Docker Desktop's WSL2 kernel 6.18, so we stay on 1.36.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sentinelflow
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed

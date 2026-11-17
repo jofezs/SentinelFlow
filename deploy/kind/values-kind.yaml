@@ -1,0 +1,16 @@
+# Values for the local kind cluster (images loaded with `kind load docker-image`).
+# Install via scripts/deploy-kind.sh, which also supplies secrets.adminToken.
+image:
+  registry: ""
+  prefix: sentinelflow/
+  tag: dev
+  pullPolicy: Never          # only use images loaded into the kind node
+
+webhookReceiver:
+  enabled: true
+
+components:
+  notifier:
+    env:
+      # Dev only: allow delivery to the in-cluster demo receiver (exact hostname).
+      SENTINELFLOW_WEBHOOK_PRIVATE_HOSTS: sentinelflow-webhook-receiver

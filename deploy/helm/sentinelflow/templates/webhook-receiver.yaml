@@ -1,0 +1,53 @@
+{{- if .Values.webhookReceiver.enabled }}
+{{- $fullname := include "sf.fullname" . -}}
+# Demo/e2e only: an example receiver that records signed webhook deliveries.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-webhook-receiver
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook-receiver
+spec:
+  selector:
+    {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-webhook-receiver
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook-receiver
+spec:
+  replicas: 1   # deliveries are kept in memory; one replica keeps /received complete
+  selector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "sf.podSecurityContext" dict | nindent 8 }}
+      containers:
+        - name: receiver
+          image: {{ include "sf.image" (dict "root" . "name" .Values.webhookReceiver.image) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            {{- include "sf.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+{{- end }}

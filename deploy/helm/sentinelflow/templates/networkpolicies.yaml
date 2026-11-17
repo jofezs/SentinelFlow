@@ -1,0 +1,200 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $fullname := include "sf.fullname" . -}}
+{{- $np := .Values.networkPolicy -}}
+{{- $instance := dict "app.kubernetes.io/name" "sentinelflow" "app.kubernetes.io/instance" .Release.Name -}}
+# Zero trust inside the namespace: nothing talks to anything unless allowed below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $instance | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+# Everyone may resolve DNS (cluster DNS only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-dns
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $instance | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The gateway API is the only entry point.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-gateway-ingress
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8000 }
+---
+# In-cluster clients of the gateway (e.g. the helm test pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-gateway-clients
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      sentinelflow.io/gateway-client: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sf.selector" (dict "root" . "component" "gateway") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8000 }
+{{- range $store := list (dict "name" "postgres" "label" "database" "port" 5432) (dict "name" "nats" "label" "nats" "port" 4222) }}
+---
+# {{ $store.name }}: reachable only by pods labelled sentinelflow.io/{{ $store.label }}=true.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-{{ $store.name }}-access
+  labels:
+    {{- include "sf.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" $ "component" $store.name) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { sentinelflow.io/{{ $store.label }}: "true" }
+      ports:
+        - { protocol: TCP, port: {{ $store.port }} }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-{{ $store.name }}-clients
+  labels:
+    {{- include "sf.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { sentinelflow.io/{{ $store.label }}: "true" }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sf.selector" (dict "root" $ "component" $store.name) | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ $store.port }} }
+{{- end }}
+---
+# Public internet for the components that need it (registries, scanned APIs,
+# webhook receivers). Private and metadata ranges are excluded at the network
+# layer: defence in depth beneath the application's SSRF guard.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-internet-egress
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      sentinelflow.io/internet: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml $np.privateRanges | nindent 14 }}
+      ports:
+        {{- range $np.internetPorts }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
+---
+# Prometheus (in a namespace carrying the configured label) may scrape metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-metrics-scrape
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $instance | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $np.metricsNamespaceLabel | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 9100 }
+{{- if .Values.webhookReceiver.enabled }}
+---
+# Demo only: the notifier may deliver to the in-cluster example receiver.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-webhook-receiver
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "sf.selector" (dict "root" . "component" "notifier") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-notifier-to-receiver
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" . "component" "notifier") | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- end }}
+{{- end }}

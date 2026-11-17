@@ -1,0 +1,166 @@
+{{- /*
+One Deployment per entry in .Values.components. Capability flags (database,
+nats, internet) become pod labels that the NetworkPolicies select on.
+*/ -}}
+{{- $fullname := include "sf.fullname" . -}}
+{{- range $name, $c := .Values.components }}
+{{- if $c.enabled }}
+{{- $autoscaled := and $c.autoscaling $c.autoscaling.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $name }}
+  labels:
+    {{- include "sf.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  {{- if not $autoscaled }}
+  replicas: {{ $c.replicas | default 1 }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "sf.selector" (dict "root" $ "component" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sf.selector" (dict "root" $ "component" $name) | nindent 8 }}
+        {{- if $c.database }}
+        sentinelflow.io/database: "true"
+        {{- end }}
+        {{- if $c.nats }}
+        sentinelflow.io/nats: "true"
+        {{- end }}
+        {{- if $c.internet }}
+        sentinelflow.io/internet: "true"
+        {{- end }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      automountServiceAccountToken: false   # no service talks to the Kubernetes API
+      securityContext:
+        {{- include "sf.podSecurityContext" dict | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "sf.image" (dict "root" $ "name" $c.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          {{- with $c.command }}
+          command: {{ toJson . }}
+          {{- end }}
+          securityContext:
+            {{- include "sf.containerSecurityContext" $ | nindent 12 }}
+          env:
+            - name: SENTINELFLOW_LOG_LEVEL
+              value: {{ $.Values.logLevel | quote }}
+            - name: SENTINELFLOW_METRICS_PORT
+              value: "9100"
+            {{- if $c.database }}
+            {{- include "sf.databaseEnv" $ | nindent 12 }}
+            {{- end }}
+            {{- if $c.nats }}
+            - name: SENTINELFLOW_NATS_URL
+              value: nats://{{ $fullname }}-nats:4222
+            {{- end }}
+            {{- if $c.adminToken }}
+            - name: SENTINELFLOW_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sf.secretName" $ }}
+                  key: admin-token
+            {{- end }}
+            {{- if $c.opaSidecar }}
+            - name: SENTINELFLOW_OPA_URL
+              value: http://127.0.0.1:8181
+            {{- end }}
+            {{- range $key, $value := $c.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            {{- with $c.port }}
+            - name: http
+              containerPort: {{ . }}
+            {{- end }}
+            - name: metrics
+              containerPort: 9100
+          {{- if eq ($c.probe | default "heartbeat") "http" }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          {{- else }}
+          # Workers have no HTTP server: their main loop touches a heartbeat file.
+          livenessProbe:
+            exec:
+              command: ["python", "-m", "sentinelflow_common.health", "--max-age", "{{ $c.heartbeatMaxAge | default 60 }}"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          {{- end }}
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- range $i, $path := $c.writablePaths }}
+            - name: writable-{{ $i }}
+              mountPath: {{ $path }}
+            {{- end }}
+        {{- if $c.opaSidecar }}
+        - name: opa
+          image: {{ include "sf.image" (dict "root" $ "name" $.Values.opa.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          # Listens on the pod IP so the kubelet can probe it (the "restricted" Pod
+          # Security Standard forbids probe hosts). No NetworkPolicy admits traffic
+          # to 8181, so only the policy engine in this pod can reach OPA.
+          args: ["run", "--server", "--addr=0.0.0.0:8181", "--log-level=error", "--ignore=*_test.rego", "/policies"]
+          ports:
+            - name: opa
+              containerPort: 8181
+          securityContext:
+            {{- include "sf.containerSecurityContext" $ | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /health, port: opa }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health, port: opa }
+            periodSeconds: 5
+          resources:
+            {{- toYaml $.Values.opa.resources | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+        {{- range $i, $path := $c.writablePaths }}
+        - name: writable-{{ $i }}
+          emptyDir: { sizeLimit: 2Gi }
+        {{- end }}
+{{- if $autoscaled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $fullname }}-{{ $name }}
+  labels:
+    {{- include "sf.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $fullname }}-{{ $name }}
+  minReplicas: {{ $c.autoscaling.minReplicas }}
+  maxReplicas: {{ $c.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $c.autoscaling.targetCPU }}
+{{- end }}
+{{- end }}
+{{- end }}

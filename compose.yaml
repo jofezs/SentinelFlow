@@ -162,17 +162,12 @@ services:
         condition: service_completed_successfully
 
   webhook-receiver:  # example receiver for demos and the e2e test
-    image: python:3.12-slim
-    command: ["python", "/app/receiver.py"]
-    user: "10001"
-    volumes:
-      - ./tools/webhook-receiver:/app:ro
+    build:
+      context: .
+      dockerfile: tools/webhook-receiver/Dockerfile
+    image: sentinelflow/webhook-receiver:dev
     ports:
       - "127.0.0.1:8090:8080"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"]
-      interval: 10s
-      timeout: 3s
 
   prometheus:
     image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
