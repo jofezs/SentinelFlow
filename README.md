@@ -61,7 +61,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
 - [x] **Phase 4** – Policy engine (OPA/Rego), per-project policy configuration
 - [x] **Phase 5** – Signed webhooks with retries + Prometheus metrics, alerts, Grafana dashboard
-- [ ] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies
+- [x] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies, Pod Security "restricted"
 - [ ] **Phase 7** – Full CI/CD: image build, self-scan, e2e on kind, signed releases
 - [ ] **Phase 8** – Threat model, docs, demo
 
@@ -296,6 +296,57 @@ delivery outcomes, and API health.
 Alert rules cover services down, compliance pass rate below 80%, failing webhooks, failing
 scanners, and dropped messages. Known label combinations are exported at 0 from startup so the
 first event of each kind is counted (an unexported counter would make `increase()` miss it).
+
+## Kubernetes
+
+A Helm chart ([`deploy/helm/sentinelflow`](deploy/helm/sentinelflow)) deploys the whole platform.
+Locally it runs on [kind](https://kind.sigs.k8s.io/):
+
+```bash
+scripts/deploy-kind.sh        # cluster + metrics-server + images + helm install + helm test
+kubectl -n sentinelflow port-forward svc/sentinelflow-gateway 8000:8000
+```
+
+```
+NAME                                  READY   STATUS
+sentinelflow-gateway-...              1/1     Running     (x2)
+sentinelflow-gateway-worker-...       1/1     Running
+sentinelflow-notifier-...             1/1     Running
+sentinelflow-policy-engine-...        2/2     Running     (engine + OPA sidecar)
+sentinelflow-scanner-{api,dockerfile,image}-...   1/1   Running   (HPA 1-4 replicas)
+sentinelflow-postgres-0 / sentinelflow-nats-0     1/1   Running
+```
+
+**One values-driven template.** Every service is an entry under `components` in
+[`values.yaml`](deploy/helm/sentinelflow/values.yaml); capability flags (`database`, `nats`,
+`internet`) generate both the environment and the network rules.
+
+**Hardening** (verified inside the running pods):
+
+- Namespace enforces the **`restricted` Pod Security Standard**: non-root (UID 10001), read-only
+  root filesystem, all capabilities dropped, `RuntimeDefault` seccomp, no privilege escalation.
+- **No service-account token** is mounted: no service needs the Kubernetes API.
+- Secrets come from a Kubernetes Secret (or an `existingSecret`), and the DB password is never
+  rendered into a manifest. The chart refuses to install without an admin token.
+
+**NetworkPolicies: default deny.** Verified by opening connections from inside the pods:
+
+| From → To | Result |
+|---|---|
+| gateway-worker / notifier → Postgres | allowed |
+| scanners → NATS | allowed |
+| scanner-api / scanner-image / notifier → public internet (80, 443, 8080, 8443) | allowed |
+| scanners → Postgres, gateway → NATS | **blocked** |
+| scanner-dockerfile → internet | **blocked** |
+| any pod → private ranges / `169.254.169.254` via the internet rule | **blocked** (SSRF defence in depth) |
+| anything → OPA sidecar port | **blocked** |
+
+**Operations.** Liveness/readiness probes on every container (HTTP for the API and OPA,
+heartbeat files for workers); CPU-based HorizontalPodAutoscalers on the scanners; a Helm-hook Job
+runs migrations post-install and pre-upgrade; `helm test` checks the gateway and database.
+
+CI lints the chart, renders it with default and kind values, validates every manifest against the
+Kubernetes 1.36 API schemas (kubeconform), and checks that it refuses to install without a token.
 
 ## Development
 

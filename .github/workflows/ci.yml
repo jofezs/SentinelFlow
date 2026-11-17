@@ -41,6 +41,28 @@ jobs:
       - name: Dashboard JSON is valid
         run: python -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['panels'], 'no panels'" deploy/grafana/dashboards/sentinelflow-compliance.json
 
+  helm:
+    name: Helm chart (lint, render, schema-validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+      - name: helm lint
+        run: helm lint deploy/helm/sentinelflow --strict --set secrets.adminToken=ci
+      - name: Validate rendered manifests against Kubernetes schemas
+        run: |
+          for values in "" "-f deploy/kind/values-kind.yaml"; do
+            helm template sentinelflow deploy/helm/sentinelflow $values --set secrets.adminToken=ci \
+              | docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -kubernetes-version 1.36.0
+          done
+      - name: Chart refuses to install without an admin token
+        run: |
+          if helm template x deploy/helm/sentinelflow >/dev/null 2>&1; then
+            echo "expected failure without secrets.adminToken"; exit 1
+          fi
+
   lint-and-test:
     name: Lint, type-check, test
     runs-on: ubuntu-latest
@@ -130,6 +152,7 @@ jobs:
           - { image: scanner-api, dockerfile: services/scanner-api/Dockerfile }
           - { image: policy-engine, dockerfile: services/policy-engine/Dockerfile }
           - { image: policy-opa, dockerfile: services/policy-engine/opa.Dockerfile }
+          - { image: webhook-receiver, dockerfile: tools/webhook-receiver/Dockerfile }
     steps:
       - uses: actions/checkout@v4
       - name: Lint Dockerfile
