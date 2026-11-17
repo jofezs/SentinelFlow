@@ -21,7 +21,7 @@ jobs:
     name: Rego policies (fmt, strict check, unit tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: opa fmt
         run: docker run --rm -v "$PWD/services/policy-engine/policies:/p" "$OPA_IMAGE" fmt --list --fail /p
       - name: opa check --strict
@@ -33,7 +33,7 @@ jobs:
     name: Prometheus rules and Grafana dashboard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: promtool check config (includes alert rules)
         run: >-
           docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" --entrypoint promtool
@@ -45,7 +45,7 @@ jobs:
     name: Helm chart (lint, render, schema-validate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
         with:
           version: v3.19.0
@@ -84,7 +84,7 @@ jobs:
       SENTINELFLOW_TEST_NATS_URL: nats://127.0.0.1:4222
       SENTINELFLOW_TEST_OPA_URL: http://127.0.0.1:8181
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -154,7 +154,7 @@ jobs:
           - { image: policy-opa, dockerfile: services/policy-engine/opa.Dockerfile }
           - { image: webhook-receiver, dockerfile: tools/webhook-receiver/Dockerfile }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -169,7 +169,7 @@ jobs:
     env:
       SENTINELFLOW_ADMIN_TOKEN: ci-only-admin-token-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -198,7 +198,7 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
