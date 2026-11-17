@@ -1,0 +1,44 @@
+# Operational alerts for SentinelFlow itself (project-level security alerts are
+# delivered as signed webhooks). Validate with: promtool check rules alerts.yml
+groups:
+  - name: sentinelflow
+    rules:
+      - alert: SentinelFlowServiceDown
+        expr: up{job="sentinelflow"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} is not being scraped"
+          description: "Prometheus cannot reach {{ $labels.instance }} for 2 minutes."
+
+      - alert: SentinelFlowCompliancePassRateLow
+        expr: |
+          sum(increase(sentinelflow_policy_decisions_total{result="passed"}[1h]))
+            / sum(increase(sentinelflow_policy_decisions_total[1h])) < 0.8
+          and sum(increase(sentinelflow_policy_decisions_total[1h])) >= 5
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Policy pass rate below 80% over the last hour"
+
+      - alert: SentinelFlowWebhookDeliveriesFailing
+        expr: sum(increase(sentinelflow_webhook_deliveries_total{outcome="failed"}[15m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Webhook deliveries are permanently failing"
+          description: "Check GET /v1/projects/me/webhook/deliveries for the receiver's responses."
+
+      - alert: SentinelFlowScannerFailing
+        expr: |
+          sum by (scanner) (increase(sentinelflow_scanner_scans_total{status="failed"}[30m]))
+            / sum by (scanner) (increase(sentinelflow_scanner_scans_total[30m])) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than half of {{ $labels.scanner }} scans are failing"
+
+      - alert: SentinelFlowMessagesDropped
+        expr: sum by (consumer) (increase(sentinelflow_messages_total{outcome="term"}[15m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.consumer }} dropped malformed messages"

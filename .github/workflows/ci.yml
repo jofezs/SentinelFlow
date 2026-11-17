@@ -29,6 +29,18 @@ jobs:
       - name: opa test
         run: docker run --rm -v "$PWD/services/policy-engine/policies:/p" "$OPA_IMAGE" test -v /p
 
+  observability-config:
+    name: Prometheus rules and Grafana dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check config (includes alert rules)
+        run: >-
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" --entrypoint promtool
+          prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+      - name: Dashboard JSON is valid
+        run: python -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['panels'], 'no panels'" deploy/grafana/dashboards/sentinelflow-compliance.json
+
   lint-and-test:
     name: Lint, type-check, test
     runs-on: ubuntu-latest
@@ -142,10 +154,12 @@ jobs:
         run: docker compose build --quiet
       - name: Start stack
         run: docker compose up -d --wait --wait-timeout 300
-      - name: Smoke test
+      - name: Smoke test (scans, policies, signed webhooks)
         run: |
           pip install httpx
           python scripts/smoke_test.py
+      - name: Observability (Prometheus targets, metrics, Grafana dashboard)
+        run: python scripts/check_observability.py
       - name: Diagnostics on failure
         if: failure()
         run: |

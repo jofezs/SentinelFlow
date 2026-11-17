@@ -60,7 +60,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 2** – Event bus (NATS JetStream), transactional outbox, Dockerfile scanner
 - [x] **Phase 3** – Image scanner (Trivy) + API endpoint scanner (SSRF-guarded)
 - [x] **Phase 4** – Policy engine (OPA/Rego), per-project policy configuration
-- [ ] **Phase 5** – Webhook notifier (HMAC-signed, retries) + Prometheus/Grafana
+- [x] **Phase 5** – Signed webhooks with retries + Prometheus metrics, alerts, Grafana dashboard
 - [ ] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies
 - [ ] **Phase 7** – Full CI/CD: image build, self-scan, e2e on kind, signed releases
 - [ ] **Phase 8** – Threat model, docs, demo
@@ -127,6 +127,9 @@ curl -s localhost:8000/v1/scans/$SCAN_ID -H "X-API-Key: $API_KEY"
 | `GET` | `/v1/scans/{id}` | API key | Scan details, findings, and policy decision |
 | `GET` | `/v1/policies` | API key | Policy catalog (with parameter JSON Schemas) |
 | `GET` / `PUT` | `/v1/projects/me/policy` | API key | Project's enabled policies and parameters |
+| `PUT` / `GET` / `DELETE` | `/v1/projects/me/webhook` | API key | Webhook URL and events (`PUT` issues a new signing secret) |
+| `POST` | `/v1/projects/me/webhook/test` | API key | Send a signed test ping |
+| `GET` | `/v1/projects/me/webhook/deliveries` | API key | Delivery log: status, attempts, last response |
 | `GET` | `/healthz`, `/readyz` | — | Liveness / readiness probes |
 
 ### Security design (gateway)
@@ -252,6 +255,47 @@ Design notes:
 - **Policies ship in the image** (`opa.Dockerfile`), so what runs is exactly what CI tested.
   CI runs `opa fmt`, `opa check --strict`, and `opa test`, and a Python test asserts the Rego
   packages match the API's policy catalog.
+
+### Webhook alerts
+
+Projects subscribe to `policy.failed`, `policy.passed`, and `scan.failed`. Deliveries are
+**signed** (same scheme as Stripe), so receivers can prove they came from SentinelFlow:
+
+```
+X-SentinelFlow-Signature: t=1761400000,v1=<hex HMAC-SHA256(secret, "t." + raw body)>
+X-SentinelFlow-Delivery:  <unique id - deduplicate on this>
+X-SentinelFlow-Event:     policy.failed
+```
+
+Receivers recompute the HMAC over the raw body, compare in constant time, and reject timestamps
+older than 5 minutes (replay protection). [`tools/webhook-receiver`](tools/webhook-receiver/receiver.py)
+is a dependency-free reference implementation.
+
+- **Never lost**: the delivery row is written in the same transaction as the policy decision.
+- **Retries with backoff** (10s → 30s → 2m → 10m → 30m) on 5xx, 408, 429, and timeouts; other 4xx
+  fail permanently. Every attempt is visible in the delivery log.
+- **Lease-based dispatch**: the notifier claims due deliveries with `FOR UPDATE SKIP LOCKED`, leases
+  them, and commits *before* sending, so slow receivers never hold database locks and replicas
+  never double-send.
+- **SSRF-guarded**: webhook URLs go through the same connection-level guard as the API scanner,
+  with TLS verification on and redirects not followed.
+
+### Observability
+
+Every service exports Prometheus metrics on an internal port (never through the public API).
+Grafana is provisioned with a **SentinelFlow Compliance** dashboard: policy pass rate, most
+violated policies, findings by severity, scan throughput and latency per scanner, webhook
+delivery outcomes, and API health.
+
+| URL | What |
+|---|---|
+| <http://localhost:3000> | Grafana (anonymous read-only; admin password from `SENTINELFLOW_GRAFANA_ADMIN_PASSWORD`) |
+| <http://localhost:9090> | Prometheus, including [alert rules](deploy/prometheus/alerts.yml) |
+| <http://localhost:8090/received> | Demo webhook receiver: what it has received |
+
+Alert rules cover services down, compliance pass rate below 80%, failing webhooks, failing
+scanners, and dropped messages. Known label combinations are exported at 0 from startup so the
+first event of each kind is counted (an unexported counter would make `increase()` miss it).
 
 ## Development
 

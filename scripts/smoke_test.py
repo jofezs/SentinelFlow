@@ -8,6 +8,9 @@ waits for them to finish, and checks the results.
 """
 
 import argparse
+import hashlib
+import hmac
+import json
 import os
 import sys
 import time
@@ -141,11 +144,64 @@ def _print_scan(name: str, scan: Scan) -> None:
             print(f"    x {v['policy_id']:<20} [{v['severity']}] {v['message'][:70]}")
 
 
+def _signature_valid(secret: str, header: str, body: bytes, tolerance: int = 300) -> bool:
+    """Same algorithm a real receiver implements (see tools/webhook-receiver)."""
+    try:
+        parts = dict(item.split("=", 1) for item in header.split(","))
+        timestamp = int(parts["t"])
+    except (KeyError, ValueError):
+        return False
+    if abs(time.time() - timestamp) > tolerance:
+        return False
+    expected = hmac.new(secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256)
+    return hmac.compare_digest(expected.hexdigest(), parts.get("v1", ""))
+
+
+def _check_webhooks(
+    client: httpx.Client,
+    headers: dict[str, str],
+    receiver_url: str,
+    project_id: str,
+    secret: str,
+    expected: int,
+    timeout: float = 60.0,
+) -> list[str]:
+    """Every policy.failed / scan.failed must arrive at the receiver, correctly signed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        mine = [
+            d
+            for d in httpx.get(f"{receiver_url}/received", timeout=5).json()
+            if json.loads(d["body"])["project"]["id"] == project_id
+        ]
+        if len(mine) >= expected or time.monotonic() > deadline:
+            break
+        time.sleep(1)
+
+    print(f"\n[webhooks] {len(mine)} delivered to the receiver (expected {expected})")
+    errors = []
+    for d in mine:
+        valid = _signature_valid(secret, d["signature"], d["body"].encode())
+        verdict = "valid" if valid else "INVALID"
+        print(f"  {d['event']:<14} delivery={d['delivery']}  signature={verdict}")
+        if not valid:
+            errors.append(f"webhooks: bad signature on delivery {d['delivery']}")
+    if len(mine) != expected:
+        errors.append(f"webhooks: expected {expected} deliveries, got {len(mine)}")
+    log = client.get("/v1/projects/me/webhook/deliveries", headers=headers).json()
+    if any(d["status"] != "delivered" for d in log):
+        errors.append(f"webhooks: delivery log not all delivered: {[d['status'] for d in log]}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--only", nargs="*", help="run only these cases")
+    parser.add_argument("--receiver-url", default="http://127.0.0.1:8090")
+    parser.add_argument("--webhook-url", default="http://webhook-receiver:8080/hook")
+    parser.add_argument("--no-webhooks", action="store_true")
     args = parser.parse_args()
     cases = [c for c in CASES if not args.only or c.name in args.only]
 
@@ -157,7 +213,17 @@ def main() -> int:
             headers={"Authorization": f"Bearer {_admin_token()}"},
         )
         project.raise_for_status()
+        project_id = project.json()["id"]
         headers = {"X-API-Key": project.json()["api_key"]}
+        secret = ""
+        if not args.no_webhooks:
+            hook = client.put(
+                "/v1/projects/me/webhook",
+                json={"url": args.webhook_url, "events": ["policy.failed", "scan.failed"]},
+                headers=headers,
+            )
+            hook.raise_for_status()
+            secret = hook.json()["secret"]
 
         pending: dict[str, Case] = {}
         for case in cases:
@@ -178,13 +244,27 @@ def main() -> int:
                     results[pending.pop(scan_id).name] = scan
             time.sleep(1)
 
-    failures = [f"{case.name}: timed out" for case in pending.values()]
-    for case in cases:
-        if case.name in results:
-            _print_scan(case.name, results[case.name])
-            for error in (case.check(results[case.name]), case.check_policy(results[case.name])):
-                if error:
-                    failures.append(f"{case.name}: {error}")
+        failures = [f"{case.name}: timed out" for case in pending.values()]
+        for case in cases:
+            if case.name in results:
+                _print_scan(case.name, results[case.name])
+                for error in (
+                    case.check(results[case.name]),
+                    case.check_policy(results[case.name]),
+                ):
+                    if error:
+                        failures.append(f"{case.name}: {error}")
+
+        if not args.no_webhooks:
+            # One delivery per policy failure and per failed scan.
+            expected = sum(
+                1
+                for s in results.values()
+                if s["status"] == "failed" or s["policy_passed"] is False
+            )
+            failures += _check_webhooks(
+                client, headers, args.receiver_url, project_id, secret, expected
+            )
 
     print()
     for failure in failures:
