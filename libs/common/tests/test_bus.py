@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 import pytest
+from prometheus_client import REGISTRY
 
 from sentinelflow_common.bus import AnyEvent, dispatch_message, retry_delay
 from sentinelflow_common.events import ScanRequested, TargetType, encode_event
@@ -65,6 +66,21 @@ async def test_malformed_message_is_terminated_not_retried(payload: bytes) -> No
     msg = FakeMessage(payload)
     await dispatch_message(msg, handler)
     assert msg.calls == ["term"]
+
+
+async def test_outcomes_are_counted() -> None:
+    async def ok(event: AnyEvent) -> None:
+        pass
+
+    def count(outcome: str) -> float:
+        labels = {"consumer": "metrics-test", "outcome": outcome}
+        return REGISTRY.get_sample_value("sentinelflow_messages_total", labels) or 0.0
+
+    before_ack, before_term = count("ack"), count("term")
+    await dispatch_message(FakeMessage(_event_bytes()), ok, consumer="metrics-test")
+    await dispatch_message(FakeMessage(b"junk"), ok, consumer="metrics-test")
+    assert count("ack") == before_ack + 1
+    assert count("term") == before_term + 1
 
 
 @pytest.mark.parametrize(("n", "delay"), [(0, 1.0), (1, 1.0), (2, 2.0), (5, 16.0), (20, 60.0)])

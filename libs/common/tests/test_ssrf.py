@@ -1,6 +1,6 @@
 import pytest
 
-from sentinelflow_api_scanner.ssrf import BlockedDestination, DestinationPolicy, ProbeError
+from sentinelflow_common.ssrf import BlockedDestination, DestinationPolicy, ProbeError
 
 POLICY = DestinationPolicy()
 
@@ -62,6 +62,15 @@ async def test_host_allowlist() -> None:
         await policy.resolve("evil.test", 443)
     with pytest.raises(BlockedDestination, match="allowlist"):
         await policy.resolve("example.com.evil.test", 443)
+
+
+async def test_private_host_exemption_is_exact_hostname_only() -> None:
+    policy = DestinationPolicy(private_hosts=frozenset({"localhost"}))
+    assert await policy.resolve("localhost", 80) in {"127.0.0.1", "::1"}
+    with pytest.raises(BlockedDestination):
+        await policy.resolve("127.0.0.1", 80)  # same IP, different name: still blocked
+    with pytest.raises(BlockedDestination):
+        await policy.resolve("localtest.me", 80)
 
 
 async def test_unresolvable_host_is_probe_error() -> None:

@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from sentinelflow_common.events import AnyEvent, decode_event, encode_event
 from sentinelflow_common.health import Heartbeat
+from sentinelflow_common.metrics import MESSAGES
 
 __all__ = ["AnyEvent", "Handler", "JetStreamBus", "dispatch_message", "install_signal_handlers"]
 
@@ -54,7 +55,9 @@ def retry_delay(num_delivered: int) -> float:
     return float(min(60, 2 ** max(0, num_delivered - 1)))
 
 
-async def dispatch_message(msg: Message, handler: Handler, num_delivered: int = 1) -> None:
+async def dispatch_message(
+    msg: Message, handler: Handler, num_delivered: int = 1, consumer: str = "unknown"
+) -> None:
     """Decode, handle, and ack a message.
 
     - Undecodable payloads are terminated (never redelivered): retrying cannot fix them.
@@ -65,6 +68,7 @@ async def dispatch_message(msg: Message, handler: Handler, num_delivered: int = 
     except ValidationError:
         logger.error("dropping malformed message: %r", msg.data[:200])
         await msg.term()
+        MESSAGES.labels(consumer, "term").inc()
         return
 
     try:
@@ -72,8 +76,10 @@ async def dispatch_message(msg: Message, handler: Handler, num_delivered: int = 
     except Exception:
         logger.exception("handler failed for event %s (delivery %d)", event.event_id, num_delivered)
         await msg.nak(delay=retry_delay(num_delivered))
+        MESSAGES.labels(consumer, "nak").inc()
         return
     await msg.ack()
+    MESSAGES.labels(consumer, "ack").inc()
 
 
 def install_signal_handlers(stop: asyncio.Event) -> None:
@@ -136,6 +142,8 @@ class JetStreamBus:
                 ack_policy=AckPolicy.EXPLICIT, ack_wait=ack_wait, max_deliver=max_deliver
             ),
         )
+        for outcome in ("ack", "nak", "term"):  # export at 0 so rate() sees the first event
+            MESSAGES.labels(durable, outcome)
         logger.info("consuming %s as %s", subject, durable)
         try:
             while not stop.is_set():
@@ -146,7 +154,9 @@ class JetStreamBus:
                 except (nats.errors.TimeoutError, TimeoutError):
                     continue
                 for msg in msgs:
-                    await dispatch_message(msg, handler, msg.metadata.num_delivered or 1)
+                    await dispatch_message(
+                        msg, handler, msg.metadata.num_delivered or 1, consumer=durable
+                    )
         finally:
             # Release the pull subscription so connection drain completes promptly.
             with contextlib.suppress(Exception):

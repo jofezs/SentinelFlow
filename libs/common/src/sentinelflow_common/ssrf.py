@@ -1,4 +1,4 @@
-"""SSRF protection for outbound probes.
+"""SSRF protection for user-controlled outbound requests (API probes, webhooks).
 
 Validating a URL up front is not enough: DNS can return a different (internal)
 address by the time we connect ("DNS rebinding"), and redirects can point
@@ -36,17 +36,22 @@ class DestinationPolicy:
     allowed_ports: frozenset[int] | None = DEFAULT_ALLOWED_PORTS  # None = any port
     allowed_hosts: tuple[str, ...] = ()  # fnmatch patterns; empty = any public host
     allow_private: bool = False  # tests only: permits loopback/private targets
+    # Exact hostnames that may resolve to private addresses (e.g. an in-cluster
+    # receiver in development). Narrow by design: never a pattern or an IP range.
+    private_hosts: frozenset[str] = frozenset()
 
     def check_host(self, host: str) -> None:
         host = host.lower().rstrip(".")
         if self.allowed_hosts and not any(fnmatch(host, p.lower()) for p in self.allowed_hosts):
             raise BlockedDestination(f"host {host!r} is not in the allowlist")
 
-    def check_ip(self, address: str) -> None:
+    def check_ip(self, address: str, host: str | None = None) -> None:
         ip = ipaddress.ip_address(address.split("%", 1)[0])  # drop IPv6 zone id
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 is loopback in disguise
         if self.allow_private:
+            return
+        if host is not None and host.lower().rstrip(".") in self.private_hosts:
             return
         if not ip.is_global or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
             raise BlockedDestination(f"{ip} is not a public address")
@@ -67,7 +72,7 @@ class DestinationPolicy:
             raise ProbeError(f"no addresses for {host!r}")
         # Every answer must be public: a mixed answer could still route internally.
         for address in addresses:
-            self.check_ip(address)
+            self.check_ip(address, host)
         return addresses[0]
 
 
@@ -112,21 +117,26 @@ def unverified_ssl_context() -> ssl.SSLContext:
 
 
 class GuardedTransport(httpx.AsyncHTTPTransport):
-    def __init__(self, policy: DestinationPolicy) -> None:
+    def __init__(self, policy: DestinationPolicy, verify_tls: bool = True) -> None:
         super().__init__(retries=0)
         # httpx does not expose a network-backend option, so replace its pool with
         # one whose backend enforces the destination policy on every connection.
         self._pool = httpcore.AsyncConnectionPool(
-            ssl_context=unverified_ssl_context(),
+            ssl_context=ssl.create_default_context() if verify_tls else unverified_ssl_context(),
             network_backend=GuardedBackend(policy),
         )
 
 
 def guarded_client(
-    policy: DestinationPolicy, timeout: float, **kwargs: object
+    policy: DestinationPolicy, timeout: float, verify_tls: bool = True, **kwargs: object
 ) -> httpx.AsyncClient:
+    """An httpx client whose every connection is checked by ``policy``.
+
+    TLS certificates are verified by default; pass ``verify_tls=False`` only when
+    the caller assesses certificate validity itself (the API scanner does).
+    """
     return httpx.AsyncClient(
-        transport=GuardedTransport(policy),
+        transport=GuardedTransport(policy, verify_tls),
         timeout=timeout,
         trust_env=False,  # never route through env-configured proxies (would bypass the guard)
         **kwargs,  # type: ignore[arg-type]

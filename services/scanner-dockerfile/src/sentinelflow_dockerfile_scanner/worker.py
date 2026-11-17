@@ -17,6 +17,7 @@ class ScannerSettings(BaseSettings):
     hadolint_binary: str = "hadolint"
     scan_timeout: float = 30.0
     log_level: str = "INFO"
+    metrics_port: int = 9100
 
 
 async def main() -> None:
@@ -29,6 +30,7 @@ async def main() -> None:
             handle_request, hadolint_binary=settings.hadolint_binary, timeout=settings.scan_timeout
         ),
         nats_url=settings.nats_url,
+        metrics_port=settings.metrics_port,
         ack_wait=settings.scan_timeout * 2 * 10,  # batch of 10, each up to scan_timeout
     )
 

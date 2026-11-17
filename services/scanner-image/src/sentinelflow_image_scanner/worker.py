@@ -18,6 +18,7 @@ class ScannerSettings(BaseSettings):
     trivy_cache_dir: str = "/var/cache/trivy"
     scan_timeout: float = 600.0
     log_level: str = "INFO"
+    metrics_port: int = 9100
 
 
 async def main() -> None:
@@ -33,6 +34,7 @@ async def main() -> None:
             cache_dir=settings.trivy_cache_dir,
         ),
         nats_url=settings.nats_url,
+        metrics_port=settings.metrics_port,
         # Image scans are slow and heavy: one at a time per replica; scale with replicas.
         batch=1,
         ack_wait=settings.scan_timeout + 60,

@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 from sentinelflow_api_scanner import checks
 from sentinelflow_api_scanner.probe import probe
-from sentinelflow_api_scanner.ssrf import BlockedDestination, DestinationPolicy, ProbeError
 from sentinelflow_common.events import ScanCompleted, ScanRequested, ScanStatus, TargetType
+from sentinelflow_common.ssrf import BlockedDestination, DestinationPolicy, ProbeError
 
 SCANNER_NAME = "api:probe"
 

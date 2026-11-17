@@ -5,8 +5,15 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from sentinelflow_common.bus import AnyEvent, JetStreamBus, install_signal_handlers
-from sentinelflow_common.events import ScanCompleted, ScanRequested, Subjects, TargetType
+from sentinelflow_common.events import (
+    ScanCompleted,
+    ScanRequested,
+    ScanStatus,
+    Subjects,
+    TargetType,
+)
 from sentinelflow_common.health import Heartbeat
+from sentinelflow_common.metrics import SCAN_DURATION, SCANS, serve_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +32,16 @@ async def run_scanner_worker(
     nats_url: str,
     ack_wait: float = 60.0,
     batch: int = 10,
+    metrics_port: int = 0,
 ) -> None:
     """Consume ``scan.requested.<target_type>`` and publish ``scan.completed``.
 
     ``ack_wait`` must exceed the worst-case time to process a whole fetched
     batch, otherwise JetStream redelivers messages that are still in progress.
     """
+    serve_metrics(metrics_port)
+    for status in ScanStatus:  # export at 0 so rate() sees the first event
+        SCANS.labels(name, status.value)
     bus = await JetStreamBus.connect(nats_url, name=name)
     await bus.ensure_stream()
 
@@ -38,9 +49,11 @@ async def run_scanner_worker(
         if not isinstance(event, ScanRequested) or event.target_type != target_type:
             return
         logger.info("scanning %s", event.scan_id)
-        result = await handle(event)
+        with SCAN_DURATION.labels(name).time():
+            result = await handle(event)
         if result is None:
             return
+        SCANS.labels(name, result.status.value).inc()
         # Deterministic msg id: a redelivered request yields a deduplicated result.
         await bus.publish_event(
             Subjects.SCAN_COMPLETED, result, msg_id=f"{event.scan_id}.completed"

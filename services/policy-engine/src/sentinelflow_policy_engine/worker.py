@@ -8,11 +8,13 @@ passing without an actual policy decision.
 import asyncio
 import logging
 
+from prometheus_client import Histogram
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sentinelflow_common.bus import AnyEvent, JetStreamBus, install_signal_handlers
 from sentinelflow_common.events import PolicyEvaluationRequested, Subjects
 from sentinelflow_common.health import Heartbeat
+from sentinelflow_common.metrics import serve_metrics
 from sentinelflow_common.worker import configure_logging
 from sentinelflow_policy_engine.engine import evaluate
 from sentinelflow_policy_engine.opa import OpaClient
@@ -26,11 +28,20 @@ class EngineSettings(BaseSettings):
     nats_url: str = "nats://127.0.0.1:4222"
     opa_url: str = "http://127.0.0.1:8181"
     log_level: str = "INFO"
+    metrics_port: int = 9100
+
+
+EVALUATION_DURATION = Histogram(
+    "sentinelflow_policy_evaluation_duration_seconds",
+    "Time to obtain a policy decision from OPA",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5),
+)
 
 
 async def main() -> None:
     settings = EngineSettings()
     configure_logging(settings.log_level)
+    serve_metrics(settings.metrics_port)
     opa = OpaClient(settings.opa_url)
     await opa.wait_ready()
     bus = await JetStreamBus.connect(settings.nats_url, name="policy-engine")
@@ -39,7 +50,8 @@ async def main() -> None:
     async def on_event(event: AnyEvent) -> None:
         if not isinstance(event, PolicyEvaluationRequested):
             return
-        decision = await evaluate(opa, event)
+        with EVALUATION_DURATION.time():
+            decision = await evaluate(opa, event)
         # Keyed on the request's event id: duplicates of this request are dropped,
         # while a later re-evaluation of the same scan is still delivered.
         await bus.publish_event(

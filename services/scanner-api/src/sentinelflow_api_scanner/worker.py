@@ -6,8 +6,8 @@ from functools import partial
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from sentinelflow_api_scanner.scanner import handle_request
-from sentinelflow_api_scanner.ssrf import DestinationPolicy
 from sentinelflow_common.events import TargetType
+from sentinelflow_common.ssrf import DestinationPolicy
 from sentinelflow_common.worker import configure_logging, run_scanner_worker
 
 
@@ -19,6 +19,7 @@ class ScannerSettings(BaseSettings):
     allowed_ports: str = "80,443,8080,8443"  # comma-separated
     allowed_hosts: str = ""  # comma-separated fnmatch patterns, e.g. "*.example.com"
     log_level: str = "INFO"
+    metrics_port: int = 9100
 
     def policy(self) -> DestinationPolicy:
         return DestinationPolicy(
@@ -35,6 +36,7 @@ async def main() -> None:
         target_type=TargetType.API_ENDPOINT,
         handle=partial(handle_request, policy=settings.policy(), timeout=settings.probe_timeout),
         nats_url=settings.nats_url,
+        metrics_port=settings.metrics_port,
         ack_wait=settings.probe_timeout * 3 * 10 + 30,  # GET + TLS per request, batch of 10
     )
 

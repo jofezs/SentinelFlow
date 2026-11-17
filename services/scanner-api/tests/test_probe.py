@@ -9,8 +9,8 @@ import pytest
 
 from sentinelflow_api_scanner.probe import PROBE_ORIGIN, USER_AGENT, probe
 from sentinelflow_api_scanner.scanner import handle_request
-from sentinelflow_api_scanner.ssrf import BlockedDestination, DestinationPolicy
 from sentinelflow_common.events import ScanRequested, ScanStatus, TargetType
+from sentinelflow_common.ssrf import BlockedDestination, DestinationPolicy
 
 LOCAL = DestinationPolicy(allowed_ports=None, allow_private=True)
 seen_headers: dict[str, str] = {}

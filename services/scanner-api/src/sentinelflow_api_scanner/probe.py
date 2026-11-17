@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from sentinelflow_api_scanner import __version__
-from sentinelflow_api_scanner.ssrf import (
+from sentinelflow_common.ssrf import (
     DestinationPolicy,
     ProbeError,
     guarded_client,
@@ -73,7 +73,12 @@ async def probe(url: str, policy: DestinationPolicy, timeout: float = 10.0) -> P
     try:
         async with (
             guarded_client(
-                policy, timeout, follow_redirects=True, max_redirects=MAX_REDIRECTS, headers=headers
+                policy,
+                timeout,
+                verify_tls=False,  # certificate validity is checked separately by probe_tls
+                follow_redirects=True,
+                max_redirects=MAX_REDIRECTS,
+                headers=headers,
             ) as client,
             client.stream("GET", url) as response,  # stream: headers only, body never read
         ):
