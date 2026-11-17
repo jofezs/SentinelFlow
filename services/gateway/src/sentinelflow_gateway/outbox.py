@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from sentinelflow_common.health import Heartbeat
 from sentinelflow_gateway.db import Database
+from sentinelflow_gateway.metrics import OUTBOX_RELAYED
 from sentinelflow_gateway.models import OutboxEvent, utcnow
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class OutboxRelay:
                 row.published_at = utcnow()
             await session.commit()
         if rows:
+            OUTBOX_RELAYED.inc(len(rows))
             logger.info("relayed %d outbox event(s)", len(rows))
         return len(rows)
 

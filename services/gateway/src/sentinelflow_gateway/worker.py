@@ -9,6 +9,7 @@ import logging
 from sentinelflow_common.bus import JetStreamBus, install_signal_handlers
 from sentinelflow_common.events import Subjects
 from sentinelflow_common.health import Heartbeat
+from sentinelflow_common.metrics import serve_metrics
 from sentinelflow_gateway.config import WorkerSettings
 from sentinelflow_gateway.db import Database
 from sentinelflow_gateway.ingest import ResultsIngester
@@ -22,6 +23,7 @@ async def main() -> None:
     logging.basicConfig(
         level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+    serve_metrics(settings.metrics_port)
     database = Database(settings.database_url)
     bus = await JetStreamBus.connect(settings.nats_url, name="gateway-worker")
     await bus.ensure_stream()

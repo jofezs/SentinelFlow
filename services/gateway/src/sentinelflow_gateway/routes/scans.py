@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from sentinelflow_common.events import ScanRequested, Subjects, TargetType
 from sentinelflow_gateway.deps import ProjectDep, SessionDep
+from sentinelflow_gateway.metrics import SCANS_SUBMITTED
 from sentinelflow_gateway.models import OutboxEvent, Scan, ScanState
 from sentinelflow_gateway.schemas import ScanCreate, ScanDetail, ScanList, ScanRead
 
@@ -30,6 +31,7 @@ async def submit_scan(body: ScanCreate, project: ProjectDep, session: SessionDep
     # Scan row and its event commit atomically; the outbox relay publishes it.
     session.add_all([scan, OutboxEvent.for_event(Subjects.scan_requested(body.target_type), event)])
     await session.commit()
+    SCANS_SUBMITTED.labels(body.target_type.value).inc()
     return ScanRead.model_validate(scan)
 
 

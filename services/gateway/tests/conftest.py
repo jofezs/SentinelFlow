@@ -44,7 +44,9 @@ async def database() -> AsyncIterator[Database]:
 
 @pytest.fixture
 def app(database: Database) -> FastAPI:
-    settings = Settings(database_url=TEST_DATABASE_URL, admin_token=SecretStr(ADMIN_TOKEN))
+    settings = Settings(
+        database_url=TEST_DATABASE_URL, admin_token=SecretStr(ADMIN_TOKEN), metrics_port=0
+    )
     return create_app(settings=settings, database=database)
 
 

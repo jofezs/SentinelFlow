@@ -13,6 +13,9 @@ class ServiceSettings(BaseSettings):
 
     database_url: str = DEFAULT_DATABASE_URL
     log_level: str = "INFO"
+    # Prometheus metrics are served on a separate port (0 disables), so they are
+    # scrapeable inside the cluster without being exposed through the public API.
+    metrics_port: int = 9100
 
 
 class Settings(ServiceSettings):
@@ -27,3 +30,14 @@ class WorkerSettings(ServiceSettings):
     nats_url: str = "nats://127.0.0.1:4222"
     relay_poll_interval: float = 0.5
     relay_batch_size: int = 100
+
+
+class NotifierSettings(ServiceSettings):
+    """Webhook notifier configuration."""
+
+    poll_interval: float = 1.0
+    batch_size: int = 20
+    max_attempts: int = 6
+    request_timeout: float = 10.0
+    # Comma-separated exact hostnames allowed to resolve to private IPs (dev receivers).
+    webhook_private_hosts: str = ""

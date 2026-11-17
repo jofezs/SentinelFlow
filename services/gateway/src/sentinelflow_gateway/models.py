@@ -52,6 +52,11 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Serialized PolicyConfig; NULL means the default (all policies, default params).
     policy_config: Mapped[dict[str, Any] | None] = mapped_column(_JSON)
+    # Webhook subscription (one per project). The signing secret must be stored
+    # recoverably because HMAC needs it; production would encrypt it with a KMS.
+    webhook_url: Mapped[str | None] = mapped_column(String(2048))
+    webhook_secret: Mapped[str | None] = mapped_column(String(128))
+    webhook_events: Mapped[list[str] | None] = mapped_column(_JSON)
 
     def policy(self) -> PolicyConfig:
         return PolicyConfig.model_validate(self.policy_config or {})
@@ -103,6 +108,41 @@ class Scan(Base):
     @property
     def finding_count(self) -> int:
         return len(self.findings or [])
+
+
+class DeliveryStatus(StrEnum):
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+
+
+class WebhookDelivery(Base):
+    """One webhook notification and its delivery log (attempts, last response)."""
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        Index(
+            "ix_webhook_deliveries_due",
+            "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+        Index("ix_webhook_deliveries_project_id_created_at", "project_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[DeliveryStatus] = mapped_column(
+        _str_enum(DeliveryStatus), default=DeliveryStatus.PENDING
+    )
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_status_code: Mapped[int | None] = mapped_column()
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OutboxEvent(Base):

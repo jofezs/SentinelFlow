@@ -16,7 +16,8 @@ from sentinelflow_common.events import (
     TargetType,
 )
 from sentinelflow_common.policies import validate_config
-from sentinelflow_gateway.models import ScanState
+from sentinelflow_gateway.models import DeliveryStatus, ScanState
+from sentinelflow_gateway.webhooks import DEFAULT_EVENTS, EVENT_TYPES
 
 MAX_DOCKERFILE_CHARS = 64 * 1024
 MAX_URL_CHARS = 2048
@@ -122,6 +123,42 @@ class ScanDetail(ScanRead):
     @classmethod
     def _none_to_empty(cls, value: object) -> object:
         return [] if value is None else value
+
+
+class WebhookUpdate(_Request):
+    url: str = Field(max_length=MAX_URL_CHARS, examples=["https://hooks.example.com/sentinelflow"])
+    events: list[str] = Field(default_factory=lambda: list(DEFAULT_EVENTS), min_length=1)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Self:
+        _validate_endpoint_url(self.url)  # destination itself is SSRF-checked at send time
+        unknown = sorted(set(self.events) - EVENT_TYPES)
+        if unknown:
+            raise ValueError(f"unknown events: {', '.join(unknown)}")
+        self.events = list(dict.fromkeys(self.events))
+        return self
+
+
+class WebhookRead(BaseModel):
+    url: str
+    events: list[str]
+    secret_hint: str = Field(description="First characters of the signing secret")
+
+
+class WebhookCreated(WebhookRead):
+    secret: str = Field(description="Signing secret. Shown only once; PUT again to rotate.")
+
+
+class DeliveryRead(_Response):
+    id: uuid.UUID
+    event_type: str
+    status: DeliveryStatus
+    attempts: int
+    last_status_code: int | None
+    last_error: str | None
+    created_at: datetime
+    next_attempt_at: datetime
+    delivered_at: datetime | None
 
 
 class PolicyRead(BaseModel):
