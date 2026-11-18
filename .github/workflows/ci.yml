@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -10,18 +11,19 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a run on main or a tag: it may be mid-way through publishing.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   HADOLINT_VERSION: v2.12.0
-  OPA_IMAGE: openpolicyagent/opa:1.21.1@sha256:d3a9a6bd4fbcb0f4403294b0d0b239b07be163ac118a46df7d50045b52e52053
+  OPA_IMAGE: openpolicyagent/opa:1.22.4@sha256:ff50f50332ff9e722ffafe2658c195ced1f9b6d4f3064000c2ecfa8cdf7acccf
 
 jobs:
   policy-tests:
     name: Rego policies (fmt, strict check, unit tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: opa fmt
         run: docker run --rm -v "$PWD/services/policy-engine/policies:/p" "$OPA_IMAGE" fmt --list --fail /p
       - name: opa check --strict
@@ -33,7 +35,7 @@ jobs:
     name: Prometheus rules and Grafana dashboard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: promtool check config (includes alert rules)
         run: >-
           docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" --entrypoint promtool
@@ -45,14 +47,15 @@ jobs:
     name: Helm chart (lint, render, schema-validate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
-          version: v3.19.0
+          version: v3.22.1
       - name: helm lint
         run: helm lint deploy/helm/sentinelflow --strict --set secrets.adminToken=ci
       - name: Validate rendered manifests against Kubernetes schemas
         run: |
+          # shellcheck disable=SC2086  # $values is intentionally split into flags
           for values in "" "-f deploy/kind/values-kind.yaml"; do
             helm template sentinelflow deploy/helm/sentinelflow $values --set secrets.adminToken=ci \
               | docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -kubernetes-version 1.36.0
@@ -84,9 +87,9 @@ jobs:
       SENTINELFLOW_TEST_NATS_URL: nats://127.0.0.1:4222
       SENTINELFLOW_TEST_OPA_URL: http://127.0.0.1:8181
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -154,9 +157,9 @@ jobs:
           - { image: policy-opa, dockerfile: services/policy-engine/opa.Dockerfile }
           - { image: webhook-receiver, dockerfile: tools/webhook-receiver/Dockerfile }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lint Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: ${{ matrix.dockerfile }}
       - name: Build
@@ -169,8 +172,8 @@ jobs:
     env:
       SENTINELFLOW_ADMIN_TOKEN: ci-only-admin-token-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Build images
@@ -194,13 +197,61 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  e2e-kubernetes:
+    name: End-to-end (Kubernetes, kind)
+    runs-on: ubuntu-latest
+    needs: [lint-and-test, policy-tests, helm]
+    env:
+      SENTINELFLOW_ADMIN_TOKEN: ci-only-admin-token-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v3.22.1
+      - name: Install kind
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          version: v0.33.0
+          install_only: true
+      - name: Deploy (cluster, images, helm install, helm test)
+        run: bash scripts/deploy-kind.sh
+      - name: Smoke test (scans, policies, signed webhooks)
+        run: |
+          pip install httpx
+          kubectl -n sentinelflow port-forward svc/sentinelflow-gateway 8000:8000 >/dev/null 2>&1 &
+          kubectl -n sentinelflow port-forward svc/sentinelflow-webhook-receiver 8090:8080 >/dev/null 2>&1 &
+          sleep 5
+          python scripts/smoke_test.py --webhook-url http://sentinelflow-webhook-receiver:8080/hook
+      - name: NetworkPolicy enforcement
+        run: bash scripts/check_network_policies.sh sentinelflow
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n sentinelflow get pods,events -o wide || true
+          kubectl -n sentinelflow logs -l app.kubernetes.io/name=sentinelflow --all-containers --tail 40 --prefix || true
+
+  release:
+    name: Release
+    # Publish only from main or a version tag, and only after every check has passed.
+    if: github.event_name == 'push'
+    needs: [lint-and-test, policy-tests, observability-config, helm, docker-build, e2e, e2e-kubernetes, secret-scan]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+    uses: ./.github/workflows/release.yml
+
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

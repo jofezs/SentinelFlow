@@ -1,0 +1,297 @@
+# Supply-chain pipeline, called by CI after every check passes on main or a v* tag.
+#
+#   images  build -> push -> Trivy gate -> cosign sign -> SBOM attestation
+#   deploy  fresh kind cluster -> verify every signature + SBOM -> helm install by digest
+#           -> helm test, smoke test, NetworkPolicy checks
+#   chart   (v* tags) package the Helm chart, push it to GHCR as OCI, sign it
+#
+# Signing is keyless (Sigstore): the certificate binds each signature to this workflow
+# file in this repository, so no signing key exists to leak. An image is signed only
+# after it passes the vulnerability gate, so "signed" means "scanned and passed".
+name: Release
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  COSIGN_VERSION: v3.1.4
+  HELM_VERSION: v3.22.1
+  KIND_VERSION: v0.33.0
+  # Who may have signed our images: this workflow, in this repository, from Actions.
+  SIGNER_IDENTITY: ^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@
+  SIGNER_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  images:
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # push to ghcr.io
+      id-token: write          # Sigstore keyless signing (OIDC)
+      security-events: write   # Trivy SARIF -> code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: gateway, dockerfile: services/gateway/Dockerfile }
+          - { image: scanner-dockerfile, dockerfile: services/scanner-dockerfile/Dockerfile }
+          - { image: scanner-image, dockerfile: services/scanner-image/Dockerfile }
+          - { image: scanner-api, dockerfile: services/scanner-api/Dockerfile }
+          - { image: policy-engine, dockerfile: services/policy-engine/Dockerfile }
+          - { image: policy-opa, dockerfile: services/policy-engine/opa.Dockerfile }
+          - { image: webhook-receiver, dockerfile: tools/webhook-receiver/Dockerfile }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Image repository
+        id: repo
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/sentinelflow/${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Tags and OCI labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.repo.outputs.name }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push (with SLSA provenance and BuildKit SBOM)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Vulnerability report (HIGH+CRITICAL -> code scanning)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        with:
+          image-ref: ${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}
+          scanners: vuln
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy.sarif
+          exit-code: "0"
+
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        if: always() && hashFiles('trivy.sarif') != ''
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-${{ matrix.image }}
+
+      - name: Gate - no fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+          TRIVY_SKIP_DB_UPDATE: "true"   # same database as the report above
+        with:
+          image-ref: ${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}
+          scanners: vuln
+          ignore-unfixed: true
+          severity: CRITICAL
+          format: table
+          exit-code: "1"
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Sign the image (keyless)
+        run: cosign sign --yes "${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}"
+
+      - name: Generate SPDX SBOM (Syft)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        env:
+          SYFT_REGISTRY_AUTH_USERNAME: ${{ github.actor }}
+          SYFT_REGISTRY_AUTH_PASSWORD: ${{ github.token }}
+        with:
+          image: ${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom-${{ matrix.image }}.spdx.json
+
+      - name: Attest the SBOM (signed, attached to the image)
+        run: >-
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json
+          "${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.image }}"
+            echo "\`${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}\`"
+            echo "- Trivy gate: passed (no fixable CRITICAL)"
+            echo "- Signed (keyless) and SBOM attested"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy signed images to Kubernetes (kind)
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      NS: sentinelflow
+      SENTINELFLOW_ADMIN_TOKEN: ci-only-admin-token-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve digests and verify signatures + SBOM attestations
+        run: |
+          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          tag="sha-${GITHUB_SHA::7}"
+          : > digests.args
+          for image in gateway scanner-dockerfile scanner-image scanner-api policy-engine policy-opa webhook-receiver; do
+            repo="$registry/sentinelflow/$image"
+            digest=$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' | jq -r .digest)
+            echo "::group::$image $digest"
+            cosign verify "$repo@$digest" \
+              --certificate-identity-regexp "$SIGNER_IDENTITY" --certificate-oidc-issuer "$SIGNER_ISSUER" \
+              -o text > /dev/null
+            cosign verify-attestation "$repo@$digest" --type spdxjson \
+              --certificate-identity-regexp "$SIGNER_IDENTITY" --certificate-oidc-issuer "$SIGNER_ISSUER" \
+              -o text > /dev/null
+            echo "signature and SBOM attestation verified"
+            echo "::endgroup::"
+            echo "--set image.digests.$image=$digest" >> digests.args
+          done
+          echo "REGISTRY=$registry" >> "$GITHUB_ENV"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Create kind cluster
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: deploy/kind/cluster.yaml
+          cluster_name: sentinelflow
+
+      - name: Namespace (restricted Pod Security) and registry credentials
+        run: |
+          kubectl create namespace "$NS"
+          kubectl label namespace "$NS" pod-security.kubernetes.io/enforce=restricted
+          kubectl -n "$NS" create secret docker-registry ghcr \
+            --docker-server=ghcr.io --docker-username="${{ github.actor }}" --docker-password="${{ github.token }}"
+
+      - name: Helm install (images pinned to the verified digests)
+        run: |
+          # shellcheck disable=SC2046
+          helm install sentinelflow deploy/helm/sentinelflow -n "$NS" \
+            -f deploy/kind/values-kind.yaml \
+            --set image.registry="$REGISTRY" --set image.tag="$TAG" \
+            --set image.pullPolicy=IfNotPresent --set 'image.pullSecrets={ghcr}' \
+            $(cat digests.args) \
+            --set secrets.adminToken="$SENTINELFLOW_ADMIN_TOKEN" \
+            --wait --timeout 10m
+          kubectl -n "$NS" get pods -o custom-columns=POD:.metadata.name,IMAGE:.spec.containers[0].image
+
+      - name: Every application pod runs a digest-pinned image
+        run: |
+          unpinned=$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' \
+            | grep "^$REGISTRY/" | grep -v '@sha256:' || true)
+          if [ -n "$unpinned" ]; then echo "not pinned by digest:"; echo "$unpinned"; exit 1; fi
+
+      - name: helm test
+        run: helm test sentinelflow -n "$NS"
+
+      - name: Smoke test (scans, policies, signed webhooks)
+        run: |
+          pip install httpx
+          kubectl -n "$NS" port-forward svc/sentinelflow-gateway 8000:8000 >/dev/null 2>&1 &
+          kubectl -n "$NS" port-forward svc/sentinelflow-webhook-receiver 8090:8080 >/dev/null 2>&1 &
+          sleep 5
+          python scripts/smoke_test.py --webhook-url http://sentinelflow-webhook-receiver:8080/hook
+
+      - name: NetworkPolicy enforcement
+        run: bash scripts/check_network_policies.sh "$NS"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NS" get pods,events -o wide || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/name=sentinelflow --all-containers --tail 40 --prefix || true
+
+  chart:
+    name: Publish Helm chart
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Package (defaults point at this release's images)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          sed -i -e "s#^  registry: \"\".*#  registry: ghcr.io/$owner#" -e "s#^  tag: dev\$#  tag: \"$version\"#" \
+            deploy/helm/sentinelflow/values.yaml
+          grep -E '^  (registry|tag):' deploy/helm/sentinelflow/values.yaml
+          helm package deploy/helm/sentinelflow --version "$version" --app-version "$version"
+          echo "CHART=sentinelflow-$version.tgz" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Push to GHCR (OCI) and sign
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "${{ github.token }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm push "$CHART" "oci://ghcr.io/$owner/charts" 2>&1 | tee push.log
+          digest=$(grep -oE 'sha256:[a-f0-9]{64}' push.log | head -1)
+          echo "${{ github.token }}" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          cosign sign --yes "ghcr.io/$owner/charts/sentinelflow@$digest"
+          echo "Chart: \`oci://ghcr.io/$owner/charts/sentinelflow\` $VERSION (\`$digest\`), signed" >> "$GITHUB_STEP_SUMMARY"

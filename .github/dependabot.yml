@@ -1,10 +1,35 @@
+# Pinned versions only stay secure if they are kept current. Dependabot proposes
+# bumps to the action SHAs, base-image digests and Python dependencies; CI (including
+# the Trivy gate and Kubernetes e2e) decides whether they merge.
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: /
-    schedule:
-      interval: weekly
   - package-ecosystem: github-actions
     directory: /
-    schedule:
-      interval: weekly
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+
+  - package-ecosystem: docker
+    directories:
+      - /services/gateway
+      - /services/policy-engine
+      - /services/scanner-api
+      - /services/scanner-dockerfile
+      - /services/scanner-image
+      - /tools/webhook-receiver
+    schedule: { interval: weekly }
+    groups:
+      base-images: { patterns: ["*"] }
+
+  - package-ecosystem: pip
+    directories:
+      - /
+      - /libs/common
+      - /services/gateway
+      - /services/policy-engine
+      - /services/scanner-api
+      - /services/scanner-dockerfile
+      - /services/scanner-image
+    schedule: { interval: weekly }
+    groups:
+      python: { patterns: ["*"] }

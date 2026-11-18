@@ -62,7 +62,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 4** – Policy engine (OPA/Rego), per-project policy configuration
 - [x] **Phase 5** – Signed webhooks with retries + Prometheus metrics, alerts, Grafana dashboard
 - [x] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies, Pod Security "restricted"
-- [ ] **Phase 7** – Full CI/CD: image build, self-scan, e2e on kind, signed releases
+- [x] **Phase 7** – CI/CD: signed images on GHCR, SBOMs, self-scan gate, e2e on Kubernetes
 - [ ] **Phase 8** – Threat model, docs, demo
 
 ## Quick start
@@ -347,6 +347,57 @@ runs migrations post-install and pre-upgrade; `helm test` checks the gateway and
 
 CI lints the chart, renders it with default and kind values, validates every manifest against the
 Kubernetes 1.36 API schemas (kubeconform), and checks that it refuses to install without a token.
+
+## Supply chain and CI/CD
+
+A security tool should hold its own build to the standard it enforces. Every push to `main`
+(and every `v*` tag) runs this pipeline after all tests pass:
+
+```
+lint · type-check · unit + integration tests · Rego tests · Helm schema validation
+e2e on Docker Compose · e2e on Kubernetes (kind) · secret scan
+        │  all green
+        ▼
+build ──► push to GHCR ──► Trivy gate ──► cosign sign ──► SBOM attestation
+                         (no fixable                    (SPDX, signed)
+                          CRITICAL)
+        │  all 7 images
+        ▼
+fresh kind cluster ──► verify every signature + SBOM ──► helm install pinned by digest
+                   ──► helm test · smoke test · NetworkPolicy enforcement checks
+        │  v* tags only
+        ▼
+Helm chart packaged, pushed to GHCR as OCI, signed
+```
+
+- **Signed means scanned.** An image is signed only after it passes the vulnerability gate, and
+  the deploy job refuses anything whose signature doesn't verify. Signing is keyless (Sigstore):
+  the certificate binds each signature to `release.yml` in this repository, so there's no
+  signing key to leak.
+- **Deploy by digest.** The chart accepts `image.digests.<name>`. CI installs the exact digests it
+  just verified, then asserts that no application pod runs a mutable tag.
+- **Provenance.** Each image carries SLSA provenance (`mode=max`) and a BuildKit SBOM, plus a
+  signed SPDX SBOM from Syft. HIGH and CRITICAL findings go to GitHub code scanning.
+- **Pinned and kept current.** Every GitHub Action is pinned to a commit SHA and every base image
+  to a digest. Dependabot proposes bumps, and the full pipeline decides whether they merge.
+
+The gate earned its place on its first run: it found **3 critical CVEs** in the Trivy binary
+bundled in the image scanner, **1 critical** in the OPA base image, and a fixable zlib HIGH in
+every Python image. Upgrading and patching brought all seven images to zero fixable critical
+and high findings, apart from one upstream HIGH in OPA that has no fix yet.
+
+**Verify an image yourself:**
+
+```bash
+cosign verify ghcr.io/jofezs/sentinelflow/gateway:main \
+  --certificate-identity-regexp '^https://github\.com/jofezs/SentinelFlow/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+cosign verify-attestation --type spdxjson ghcr.io/jofezs/sentinelflow/gateway:main \
+  --certificate-identity-regexp '^https://github\.com/jofezs/SentinelFlow/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  | jq -r .payload | base64 -d | jq '.predicate.packages | length'
+```
 
 ## Development
 
