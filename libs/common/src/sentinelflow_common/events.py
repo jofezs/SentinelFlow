@@ -68,6 +68,13 @@ class Subjects:
     def scan_requested(target_type: TargetType) -> str:
         return f"{Subjects.SCAN_REQUESTED}.{target_type.value}"
 
+    @staticmethod
+    def scan_completed(target_type: TargetType) -> str:
+        """Per-target subject, so NATS permissions bind each scanner to its own results."""
+        return f"{Subjects.SCAN_COMPLETED}.{target_type.value}"
+
+    ALL_SCAN_COMPLETED = "scan.completed.>"
+
 
 class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

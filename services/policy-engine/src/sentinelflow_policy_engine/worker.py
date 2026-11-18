@@ -45,7 +45,7 @@ async def main() -> None:
     opa = OpaClient(settings.opa_url)
     await opa.wait_ready()
     bus = await JetStreamBus.connect(settings.nats_url, name="policy-engine")
-    await bus.ensure_stream()
+    await bus.wait_for_stream()  # only the gateway worker manages the stream
 
     async def on_event(event: AnyEvent) -> None:
         if not isinstance(event, PolicyEvaluationRequested):

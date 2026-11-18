@@ -11,7 +11,7 @@ That makes two outcomes the worst case:
 This document lists what we protect, where trust changes, and for each threat the control and
 the code or test that enforces it. Open risks are listed as open.
 
-*Method: STRIDE per trust boundary. Last reviewed 2026-11-18, at commit `77fe819`.*
+*Method: STRIDE per trust boundary. Last reviewed 2026-11-18.*
 
 ## System and trust boundaries
 
@@ -81,7 +81,7 @@ Status: **Mitigated** (control in place and tested) · **Partial** · **Open**.
 
 | ID | STRIDE | Threat | Control | Evidence | Status |
 |---|---|---|---|---|---|
-| T7 | T, S | **A compromised scanner publishes a forged `policy.evaluated` (or a `scan.completed` for another scan), turning a FAIL into a PASS** | NetworkPolicies limit which pods reach NATS, but every scanner can reach it, and **NATS has no per-service credentials or subject permissions**. The ingester doesn't check that a result came from the scanner matching the scan's target type. | [networkpolicies.yaml](../deploy/helm/sentinelflow/templates/networkpolicies.yaml), [ingest.py](../services/gateway/src/sentinelflow_gateway/ingest.py) | **Open: highest priority** |
+| T7 | T, S | **A compromised scanner publishes a forged `policy.evaluated` (or another scanner's results), turning a FAIL into a PASS** | Three links, each enforced by a different layer: (1) **NATS least privilege**: one user per service, no anonymous access; scanners may publish only `scan.completed.<own type>`, only the policy engine may publish `policy.evaluated`, and per-service reply inboxes stop services reading or injecting into each other's JetStream replies. Only the gateway worker can create or change the stream. (2) A result whose payload claims a different target type than its subject is dropped. (3) The ingester rejects results whose target type differs from the scan's. CI attacks the running stack with a scanner's real credentials. | [nats.conf](../deploy/helm/sentinelflow/files/nats.conf), [bus.py](../libs/common/src/sentinelflow_common/bus.py), [ingest.py](../services/gateway/src/sentinelflow_gateway/ingest.py), [check_nats_permissions.sh](../scripts/check_nats_permissions.sh), [test_bus.py](../libs/common/tests/test_bus.py), [test_ingest.py](../services/gateway/tests/test_ingest.py) | Mitigated. Residual: a compromised scanner can still forge results **for its own target type** (e.g. the image scanner for image scans); it is trusted for those by design. |
 | T8 | T | Lost or duplicated events change outcomes | Transactional outbox; `Nats-Msg-Id` dedup; ingester ignores results for scans already terminal | [test_outbox.py](../services/gateway/tests/test_outbox.py), [test_ingest.py](../services/gateway/tests/test_ingest.py) | Mitigated |
 | T9 | T | Policy engine fails open (OPA down, undefined decision) → scan marked passing | Fail closed: retried, never marked passing without a decision; OPA output strictly validated | [test_engine.py](../services/policy-engine/tests/test_engine.py) | Mitigated |
 | T10 | E | A compromised scanner reaches Postgres or OPA directly | Default-deny NetworkPolicies: only gateway-worker, notifier and the migration job reach Postgres; OPA port reachable only inside its pod. Verified by live TCP probes in CI. | [check_network_policies.sh](../scripts/check_network_policies.sh) | Mitigated |
@@ -117,18 +117,21 @@ Status: **Mitigated** (control in place and tested) · **Partial** · **Open**.
 
 ## Open risks and planned work
 
-In priority order:
+**Fixed after the first review:** T7, the main false-PASS path. The first version of this
+document found that any pod reaching NATS could publish any event, including a forged
+`policy.evaluated`. It is now closed by NATS per-service permissions plus two payload
+checks, and CI attacks it on every run (see T7).
 
-1. **T7: bus authorization.** Give each service its own NATS credentials with subject
-   permissions (scanners may publish only `scan.completed`, the policy engine only
-   `policy.evaluated`, and nobody else either), and have the ingester reject results whose
-   `scanner` doesn't match the scan's target type. This closes the main false-PASS path.
-2. **T5: per-tenant rate limit and concurrent-scan quota** at the gateway.
-3. **T12: encrypt webhook secrets at rest** (envelope encryption, key outside the database).
-4. **T22: admission control.** Enforce cosign signatures in the cluster (Sigstore
+Remaining, in priority order:
+
+1. **T5: per-tenant rate limit and concurrent-scan quota** at the gateway.
+2. **T12: encrypt webhook secrets at rest** (envelope encryption, key outside the database).
+3. **T22: admission control.** Enforce cosign signatures in the cluster (Sigstore
    policy-controller or Kyverno), so unsigned images can't run even if deployed by hand.
-5. **T11: mTLS between services** in production (service mesh or NATS/Postgres TLS).
-6. **T6: admin token rotation and an audit log** of tenant creation.
+4. **T11: mTLS between services** in production (service mesh or NATS/Postgres TLS).
+5. **T6: admin token rotation and an audit log** of tenant creation.
+6. **T7 residual:** sign scan results with per-scanner keys, so even a compromised scanner
+   can't forge results without also stealing its key.
 
 ## Residual assumptions
 

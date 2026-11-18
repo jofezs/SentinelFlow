@@ -90,6 +90,16 @@ spec:
 {{- if .Values.nats.enabled }}
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-nats
+  labels:
+    {{- include "sf.labels" . | nindent 4 }}
+data:
+  nats.conf: |-
+    {{- .Files.Get "files/nats.conf" | nindent 4 }}
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: {{ $fullname }}-nats
@@ -120,6 +130,8 @@ spec:
     metadata:
       labels:
         {{- include "sf.selector" (dict "root" . "component" "nats") | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Files.Get "files/nats.conf" | sha256sum }}
     spec:
       automountServiceAccountToken: false
       {{- include "sf.imagePullSecrets" $ | indent 6 }}
@@ -128,7 +140,17 @@ spec:
       containers:
         - name: nats
           image: {{ .Values.nats.image }}
-          args: ["-js", "-sd", "/data", "-m", "8222"]
+          args: ["-c", "/etc/nats/nats.conf"]
+          env:
+            {{- range $name, $c := .Values.components }}
+            {{- if $c.nats }}
+            - name: NATS_PASSWORD_{{ $name | upper | replace "-" "_" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sf.secretName" $ }}
+                  key: nats-password-{{ $name }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: client
               containerPort: 4222
@@ -148,6 +170,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: config
+              mountPath: /etc/nats
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-nats
   volumeClaimTemplates:
     - metadata:
         name: data

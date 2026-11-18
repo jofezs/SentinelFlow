@@ -169,6 +169,10 @@ POST /v1/scans ─▶ [scans + outbox_events]   ◀── single DB transaction
   worker replicas scale horizontally.
 - **At-least-once + idempotency**: publishers set `Nats-Msg-Id` (JetStream drops duplicates);
   the results ingester ignores results for scans already in a terminal state.
+- **Least-privilege bus**: every service is its own NATS user and may publish only its own
+  events. Scanners publish only `scan.completed.<their type>`, and only the policy engine can
+  publish a decision, so a compromised scanner can't forge a PASS. CI attacks the running stack
+  with a scanner's credentials to prove it ([`check_nats_permissions.sh`](scripts/check_nats_permissions.sh)).
 - **Poison messages** are terminated rather than retried forever; handler failures are redelivered
   with exponential backoff (capped at `max_deliver`).
 - **Graceful shutdown**: workers drain on SIGTERM (Kubernetes pod termination).

@@ -82,3 +82,16 @@ async def test_unknown_scan_and_other_events_are_ignored(database: Database) -> 
     ghost = {"id": str(uuid.uuid4()), "project_id": str(uuid.uuid4())}
     await ingester(_completed(ghost))  # no exception
     await ingester(PolicyEvaluated(scan_id=uuid.uuid4(), project_id=uuid.uuid4(), passed=True))
+
+
+async def test_result_for_a_different_target_type_is_rejected(
+    client: httpx.AsyncClient, api_headers: dict[str, str], database: Database
+) -> None:
+    """A scanner can only complete scans of its own type (e.g. no forged image PASS)."""
+    scan = await submit_scan(client, api_headers, "dockerfile", "FROM alpine")
+    forged = _completed(scan, target_type=TargetType.API_ENDPOINT, scanner="api-probe", findings=())
+    await ResultsIngester(database)(forged)
+
+    body = (await client.get(f"/v1/scans/{scan['id']}", headers=api_headers)).json()
+    assert body["status"] != "completed"
+    assert body["finding_count"] == 0

@@ -4,13 +4,20 @@ from uuid import uuid4
 import pytest
 from prometheus_client import REGISTRY
 
-from sentinelflow_common.bus import AnyEvent, dispatch_message, retry_delay
-from sentinelflow_common.events import ScanRequested, TargetType, encode_event
+from sentinelflow_common.bus import AnyEvent, dispatch_message, retry_delay, split_credentials
+from sentinelflow_common.events import (
+    ScanCompleted,
+    ScanRequested,
+    ScanStatus,
+    TargetType,
+    encode_event,
+)
 
 
 @dataclass
 class FakeMessage:
     data: bytes
+    subject: str = "scan.requested.dockerfile"
     calls: list[str] = field(default_factory=list)
     nak_delay: float | None = None
 
@@ -86,3 +93,54 @@ async def test_outcomes_are_counted() -> None:
 @pytest.mark.parametrize(("n", "delay"), [(0, 1.0), (1, 1.0), (2, 2.0), (5, 16.0), (20, 60.0)])
 def test_retry_delay_is_exponential_and_capped(n: int, delay: float) -> None:
     assert retry_delay(n) == delay
+
+
+def _completed_bytes(target_type: TargetType) -> bytes:
+    return encode_event(
+        ScanCompleted(
+            scan_id=uuid4(),
+            project_id=uuid4(),
+            target_type=target_type,
+            scanner="trivy",
+            status=ScanStatus.SUCCEEDED,
+        )
+    )
+
+
+async def test_scan_result_on_its_own_subject_is_handled() -> None:
+    received: list[AnyEvent] = []
+
+    async def handler(event: AnyEvent) -> None:
+        received.append(event)
+
+    msg = FakeMessage(_completed_bytes(TargetType.IMAGE), subject="scan.completed.image")
+    await dispatch_message(msg, handler)
+    assert msg.calls == ["ack"] and len(received) == 1
+
+
+async def test_scan_result_claiming_another_target_type_is_dropped() -> None:
+    """NATS lets the API scanner publish only on scan.completed.api_endpoint; a payload
+    there that claims to be an image result must never reach the handler."""
+    received: list[AnyEvent] = []
+
+    async def handler(event: AnyEvent) -> None:
+        received.append(event)
+
+    msg = FakeMessage(_completed_bytes(TargetType.IMAGE), subject="scan.completed.api_endpoint")
+    await dispatch_message(msg, handler)
+    assert msg.calls == ["term"]
+    assert received == []
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("nats://nats:4222", ("nats://nats:4222", None, None)),
+        ("nats://scanner-api:s3cr%40t@nats:4222", ("nats://nats:4222", "scanner-api", "s3cr@t")),
+        ("nats://user@127.0.0.1", ("nats://127.0.0.1", "user", None)),
+    ],
+)
+def test_credentials_are_split_out_of_the_url(
+    url: str, expected: tuple[str, str | None, str | None]
+) -> None:
+    assert split_credentials(url) == expected

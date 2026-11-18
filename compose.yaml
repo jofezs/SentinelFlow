@@ -11,7 +11,6 @@ x-gateway-image: &gateway-build
 
 x-common-env: &common-env
   SENTINELFLOW_DATABASE_URL: postgresql+asyncpg://sentinelflow:sentinelflow@postgres:5432/sentinelflow
-  SENTINELFLOW_NATS_URL: nats://nats:4222
 
 services:
   postgres:
@@ -34,12 +33,21 @@ services:
 
   nats:
     image: nats:2.10-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    # One user per service with least-privilege subject permissions (see the config file).
+    # The default passwords are for local development only; Helm generates random ones.
+    command: ["-c", "/etc/nats/nats.conf"]
+    environment:
+      NATS_PASSWORD_GATEWAY_WORKER: ${NATS_PASSWORD_GATEWAY_WORKER:-dev-gateway-worker}
+      NATS_PASSWORD_POLICY_ENGINE: ${NATS_PASSWORD_POLICY_ENGINE:-dev-policy-engine}
+      NATS_PASSWORD_SCANNER_DOCKERFILE: ${NATS_PASSWORD_SCANNER_DOCKERFILE:-dev-scanner-dockerfile}
+      NATS_PASSWORD_SCANNER_IMAGE: ${NATS_PASSWORD_SCANNER_IMAGE:-dev-scanner-image}
+      NATS_PASSWORD_SCANNER_API: ${NATS_PASSWORD_SCANNER_API:-dev-scanner-api}
     ports:
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"  # monitoring: http://localhost:8222/jsz
     volumes:
       - natsdata:/data
+      - ./deploy/helm/sentinelflow/files/nats.conf:/etc/nats/nats.conf:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz?js-enabled-only=true"]
       interval: 5s
@@ -71,6 +79,7 @@ services:
     command: ["python", "-m", "sentinelflow_gateway.worker"]
     environment:
       <<: *common-env
+      SENTINELFLOW_NATS_URL: nats://gateway-worker:${NATS_PASSWORD_GATEWAY_WORKER:-dev-gateway-worker}@nats:4222
     healthcheck:  # no HTTP server in the worker: use its loop heartbeat instead
       test: ["CMD", "python", "-m", "sentinelflow_common.health", "--max-age", "60"]
       interval: 15s
@@ -90,6 +99,7 @@ services:
     image: sentinelflow/scanner-dockerfile:dev
     environment:
       <<: *common-env
+      SENTINELFLOW_NATS_URL: nats://scanner-dockerfile:${NATS_PASSWORD_SCANNER_DOCKERFILE:-dev-scanner-dockerfile}@nats:4222
     restart: on-failure
     depends_on:
       nats:
@@ -102,6 +112,7 @@ services:
     image: sentinelflow/scanner-image:dev
     environment:
       <<: *common-env
+      SENTINELFLOW_NATS_URL: nats://scanner-image:${NATS_PASSWORD_SCANNER_IMAGE:-dev-scanner-image}@nats:4222
     volumes:
       - trivy-cache:/var/cache/trivy  # vulnerability DB persists across restarts
     restart: on-failure
@@ -116,6 +127,7 @@ services:
     image: sentinelflow/scanner-api:dev
     environment:
       <<: *common-env
+      SENTINELFLOW_NATS_URL: nats://scanner-api:${NATS_PASSWORD_SCANNER_API:-dev-scanner-api}@nats:4222
       SENTINELFLOW_ALLOWED_HOSTS: ${SENTINELFLOW_ALLOWED_HOSTS:-}
     restart: on-failure
     depends_on:
@@ -136,6 +148,7 @@ services:
     image: sentinelflow/policy-engine:dev
     environment:
       <<: *common-env
+      SENTINELFLOW_NATS_URL: nats://policy-engine:${NATS_PASSWORD_POLICY_ENGINE:-dev-policy-engine}@nats:4222
       SENTINELFLOW_OPA_URL: http://opa:8181
     restart: on-failure
     depends_on:

@@ -41,7 +41,7 @@ async def main() -> None:
                 relay.run(stop, poll_interval=settings.relay_poll_interval, heartbeat=heartbeat)
             )
             for subject, durable in (
-                (Subjects.SCAN_COMPLETED, "gateway-results"),
+                (Subjects.ALL_SCAN_COMPLETED, "gateway-scan-results"),
                 (Subjects.POLICY_EVALUATED, "gateway-policy"),
             ):
                 tg.create_task(bus.consume(subject, durable, ingester, stop, heartbeat=heartbeat))

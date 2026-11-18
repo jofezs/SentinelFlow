@@ -61,8 +61,13 @@ spec:
             {{- include "sf.databaseEnv" $ | nindent 12 }}
             {{- end }}
             {{- if $c.nats }}
-            - name: SENTINELFLOW_NATS_URL
-              value: nats://{{ $fullname }}-nats:4222
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sf.secretName" $ }}
+                  key: nats-password-{{ $name }}
+            - name: SENTINELFLOW_NATS_URL   # $(NATS_PASSWORD) is expanded by the kubelet
+              value: nats://{{ $name }}:$(NATS_PASSWORD)@{{ $fullname }}-nats:4222
             {{- end }}
             {{- if $c.adminToken }}
             - name: SENTINELFLOW_ADMIN_TOKEN

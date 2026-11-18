@@ -34,7 +34,7 @@ async def run_scanner_worker(
     batch: int = 10,
     metrics_port: int = 0,
 ) -> None:
-    """Consume ``scan.requested.<target_type>`` and publish ``scan.completed``.
+    """Consume ``scan.requested.<target_type>`` and publish ``scan.completed.<target_type>``.
 
     ``ack_wait`` must exceed the worst-case time to process a whole fetched
     batch, otherwise JetStream redelivers messages that are still in progress.
@@ -43,7 +43,7 @@ async def run_scanner_worker(
     for status in ScanStatus:  # export at 0 so rate() sees the first event
         SCANS.labels(name, status.value)
     bus = await JetStreamBus.connect(nats_url, name=name)
-    await bus.ensure_stream()
+    await bus.wait_for_stream()  # only the gateway worker manages the stream
 
     async def on_event(event: AnyEvent) -> None:
         if not isinstance(event, ScanRequested) or event.target_type != target_type:
@@ -56,7 +56,7 @@ async def run_scanner_worker(
         SCANS.labels(name, result.status.value).inc()
         # Deterministic msg id: a redelivered request yields a deduplicated result.
         await bus.publish_event(
-            Subjects.SCAN_COMPLETED, result, msg_id=f"{event.scan_id}.completed"
+            Subjects.scan_completed(target_type), result, msg_id=f"{event.scan_id}.completed"
         )
         logger.info(
             "scan %s %s with %d findings", event.scan_id, result.status, len(result.findings)

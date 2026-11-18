@@ -15,6 +15,8 @@ logLevel: INFO
 secrets:
   # Use an existing Secret with keys "admin-token" and "postgres-password" (recommended in
   # production, e.g. synced from a vault). Otherwise the chart creates one.
+  # Keys: admin-token, postgres-password, and nats-password-<component> for every
+  # component with nats: true (each service is its own NATS user).
   existingSecret: ""
   adminToken: ""            # required unless existingSecret is set
   postgresPassword: ""      # generated once and preserved across upgrades if empty

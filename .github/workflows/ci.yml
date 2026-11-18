@@ -186,6 +186,8 @@ jobs:
           python scripts/smoke_test.py
       - name: Observability (Prometheus targets, metrics, Grafana dashboard)
         run: python scripts/check_observability.py
+      - name: NATS least privilege (attack with a compromised scanner's credentials)
+        run: bash scripts/check_nats_permissions.sh
       - name: Diagnostics on failure
         if: failure()
         run: |

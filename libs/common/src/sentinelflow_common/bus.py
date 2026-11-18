@@ -13,6 +13,7 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable
 from typing import Protocol
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import nats
 import nats.errors
@@ -22,7 +23,13 @@ from nats.js import JetStreamContext
 from nats.js.api import AckPolicy, ConsumerConfig, RetentionPolicy, StorageType, StreamConfig
 from pydantic import ValidationError
 
-from sentinelflow_common.events import AnyEvent, decode_event, encode_event
+from sentinelflow_common.events import (
+    AnyEvent,
+    ScanCompleted,
+    Subjects,
+    decode_event,
+    encode_event,
+)
 from sentinelflow_common.health import Heartbeat
 from sentinelflow_common.metrics import MESSAGES
 
@@ -42,6 +49,7 @@ class Message(Protocol):
     """The subset of a JetStream message that ``dispatch_message`` needs."""
 
     data: bytes
+    subject: str
 
     async def ack(self) -> None: ...
 
@@ -61,12 +69,28 @@ async def dispatch_message(
     """Decode, handle, and ack a message.
 
     - Undecodable payloads are terminated (never redelivered): retrying cannot fix them.
+    - A scan result whose declared target type differs from its subject is terminated.
+      NATS permissions decide who may publish on ``scan.completed.<type>``; this check
+      stops a publisher from claiming another type inside the payload.
     - Handler failures are nak'ed with backoff so JetStream redelivers them.
     """
     try:
         event = decode_event(msg.data)
     except ValidationError:
         logger.error("dropping malformed message: %r", msg.data[:200])
+        await msg.term()
+        MESSAGES.labels(consumer, "term").inc()
+        return
+
+    if isinstance(event, ScanCompleted) and msg.subject != Subjects.scan_completed(
+        event.target_type
+    ):
+        logger.error(
+            "dropping scan result %s: target type %s does not match subject %s",
+            event.event_id,
+            event.target_type,
+            msg.subject,
+        )
         await msg.term()
         MESSAGES.labels(consumer, "term").inc()
         return
@@ -80,6 +104,17 @@ async def dispatch_message(
         return
     await msg.ack()
     MESSAGES.labels(consumer, "ack").inc()
+
+
+def split_credentials(url: str) -> tuple[str, str | None, str | None]:
+    """``nats://user:pw@host:4222`` -> (``nats://host:4222``, user, password)."""
+    parts = urlsplit(url)
+    if parts.username is None:
+        return url, None, None
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    password = unquote(parts.password) if parts.password is not None else None
+    return urlunsplit(parts._replace(netloc=netloc)), unquote(parts.username), password
 
 
 def install_signal_handlers(stop: asyncio.Event) -> None:
@@ -97,8 +132,36 @@ class JetStreamBus:
 
     @classmethod
     async def connect(cls, url: str, name: str) -> JetStreamBus:
-        nc = await nats.connect(url, name=name, max_reconnect_attempts=-1)
+        """Connect as service ``name``.
+
+        Credentials may be embedded in the URL (``nats://user:password@host:4222``); they are
+        passed separately so the server URL that the client keeps and logs carries no secret.
+        Replies arrive on a per-service inbox prefix (``_INBOX.<name>``), which the server's
+        permissions confine to this service.
+        """
+        server, user, password = split_credentials(url)
+        nc = await nats.connect(
+            server,
+            name=name,
+            user=user,
+            password=password,
+            inbox_prefix=f"_INBOX.{name}",
+            max_reconnect_attempts=-1,
+        )
         return cls(nc, nc.jetstream())
+
+    async def wait_for_stream(self, timeout: float = 120.0) -> None:
+        """Wait until the stream exists. Only the gateway worker may create or change it."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            try:
+                await self._js.stream_info(STREAM_NAME)
+                return
+            except nats.js.errors.NotFoundError:
+                if asyncio.get_running_loop().time() > deadline:
+                    raise
+                logger.info("waiting for stream %s to be created", STREAM_NAME)
+                await asyncio.sleep(2)
 
     async def ensure_stream(self) -> None:
         config = StreamConfig(

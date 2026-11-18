@@ -51,6 +51,16 @@ class ResultsIngester:
             if scan.status.is_terminal:
                 logger.info("scan %s already %s; ignoring duplicate", scan.id, scan.status)
                 return
+            if event.target_type != scan.target_type:
+                # The subject was already checked against the payload; this binds it to the
+                # scan, so e.g. the API scanner cannot complete an image scan.
+                logger.error(
+                    "rejecting %s result for %s scan %s",
+                    event.target_type,
+                    scan.target_type,
+                    scan.id,
+                )
+                return
 
             succeeded = event.status == ScanStatus.SUCCEEDED
             scan.status = ScanState.COMPLETED if succeeded else ScanState.FAILED
