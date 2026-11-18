@@ -18,10 +18,26 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
-{{/* Image reference. Args: dict "root" $ "name" "<image>" */}}
+{{/* Image reference. Args: dict "root" $ "name" "<image>"
+     A digest in image.digests.<name> pins the exact (signed) image instead of the tag. */}}
 {{- define "sf.image" -}}
 {{- $i := .root.Values.image -}}
-{{- if $i.registry }}{{ $i.registry }}/{{ end }}{{ $i.prefix }}{{ .name }}:{{ $i.tag }}
+{{- $repo := printf "%s%s%s" (ternary (printf "%s/" $i.registry) "" (ne $i.registry "")) $i.prefix .name -}}
+{{- with (index ($i.digests | default dict) .name) -}}
+{{ $repo }}@{{ . }}
+{{- else -}}
+{{ $repo }}:{{ $i.tag }}
+{{- end -}}
+{{- end -}}
+
+{{/* imagePullSecrets for every pod (private registries). */}}
+{{- define "sf.imagePullSecrets" -}}
+{{- with .Values.image.pullSecrets }}
+imagePullSecrets:
+{{- range . }}
+  - name: {{ . }}
+{{- end }}
+{{- end }}
 {{- end -}}
 
 {{- define "sf.secretName" -}}

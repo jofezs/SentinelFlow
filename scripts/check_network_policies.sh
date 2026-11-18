@@ -9,8 +9,10 @@ set -uo pipefail
 NS=${1:-sentinelflow}
 failures=0
 
-pod_of() { kubectl -n "$NS" get pod -l "app.kubernetes.io/component=$1" -o jsonpath='{.items[0].metadata.name}'; }
-ip_of()  { kubectl -n "$NS" get pod -l "app.kubernetes.io/component=$1" -o jsonpath='{.items[0].status.podIP}'; }
+# Only Running pods: evicted or terminating ones may still carry the label.
+running() { kubectl -n "$NS" get pod -l "app.kubernetes.io/component=$1" --field-selector=status.phase=Running -o jsonpath="{.items[0].$2}"; }
+pod_of() { running "$1" metadata.name; }
+ip_of()  { running "$1" status.podIP; }
 
 probe() {  # probe <from-component> <host> <port> <CONNECTED|BLOCKED>
   local result

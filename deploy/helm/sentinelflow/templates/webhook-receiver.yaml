@@ -33,6 +33,7 @@ spec:
         {{- include "sf.selector" (dict "root" . "component" "webhook-receiver") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- include "sf.imagePullSecrets" $ | indent 6 }}
       securityContext:
         {{- include "sf.podSecurityContext" dict | nindent 8 }}
       containers:

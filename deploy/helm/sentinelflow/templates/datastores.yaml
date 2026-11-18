@@ -33,6 +33,7 @@ spec:
         {{- include "sf.selector" (dict "root" . "component" "postgres") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- include "sf.imagePullSecrets" $ | indent 6 }}
       securityContext:
         {{- include "sf.podSecurityContext" (dict "uid" 70) | nindent 8 }}   # postgres user in the alpine image
       containers:
@@ -121,6 +122,7 @@ spec:
         {{- include "sf.selector" (dict "root" . "component" "nats") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- include "sf.imagePullSecrets" $ | indent 6 }}
       securityContext:
         {{- include "sf.podSecurityContext" (dict "uid" 1000) | nindent 8 }}
       containers:

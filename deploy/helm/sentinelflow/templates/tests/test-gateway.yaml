@@ -12,6 +12,7 @@ metadata:
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false
+  {{- include "sf.imagePullSecrets" $ | indent 2 }}
   securityContext:
     {{- include "sf.podSecurityContext" dict | nindent 4 }}
   containers:

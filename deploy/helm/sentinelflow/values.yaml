@@ -5,6 +5,10 @@ image:
   prefix: sentinelflow/     # image = <registry>/<prefix><component image>:<tag>
   tag: dev
   pullPolicy: IfNotPresent
+  # Optional per-image digests, e.g. {gateway: "sha256:..."}. When set, pods run that exact
+  # image (what CI verified with cosign) instead of the mutable tag.
+  digests: {}
+  pullSecrets: []          # names of existing docker-registry Secrets
 
 logLevel: INFO
 

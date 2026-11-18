@@ -40,6 +40,7 @@ spec:
         prometheus.io/port: "9100"
     spec:
       automountServiceAccountToken: false   # no service talks to the Kubernetes API
+      {{- include "sf.imagePullSecrets" $ | indent 6 }}
       securityContext:
         {{- include "sf.podSecurityContext" dict | nindent 8 }}
       containers:
