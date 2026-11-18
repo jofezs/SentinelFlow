@@ -3,7 +3,7 @@
 
 FROM hadolint/hadolint:v2.12.0 AS hadolint
 
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 COPY libs/common libs/common
@@ -11,11 +11,15 @@ COPY services/scanner-dockerfile services/scanner-dockerfile
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install ./libs/common ./services/scanner-dockerfile
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+# Patch OS packages: upstream slim images lag Debian security fixes.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 COPY --from=hadolint /bin/hadolint /usr/local/bin/hadolint
 COPY --from=builder /opt/venv /opt/venv
 USER 10001

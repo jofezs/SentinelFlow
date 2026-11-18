@@ -3,7 +3,7 @@
 # with the image, so what runs in production is exactly what CI tested.
 # Build context: repository root.
 
-FROM openpolicyagent/opa:1.21.1@sha256:d3a9a6bd4fbcb0f4403294b0d0b239b07be163ac118a46df7d50045b52e52053
+FROM openpolicyagent/opa:1.22.4@sha256:ff50f50332ff9e722ffafe2658c195ced1f9b6d4f3064000c2ecfa8cdf7acccf
 COPY services/policy-engine/policies /policies
 # Image runs as non-root UID 1000. Liveness/readiness: HTTP GET /health
 # (Kubernetes httpGet probe; the image is distroless, so no shell-based check).
