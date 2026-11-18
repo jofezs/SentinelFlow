@@ -11,6 +11,10 @@ SentinelFlow is an event-driven microservices platform. Users submit **container
 results against policy-as-code, tracks compliance metrics over time, and fires signed webhooks
 when something violates policy.
 
+**Security:** see the [threat model](docs/threat-model.md): 24 threats across 5 trust
+boundaries, each linked to the code or test that addresses it, with the open risks stated
+openly.
+
 ## Architecture
 
 ```
