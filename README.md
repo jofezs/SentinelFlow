@@ -11,6 +11,11 @@ SentinelFlow is an event-driven microservices platform. Users submit **container
 results against policy-as-code, tracks compliance metrics over time, and fires signed webhooks
 when something violates policy.
 
+![SentinelFlow demo: an insecure Dockerfile is scanned, fails policy, triggers a signed webhook, and an SSRF attempt is refused](docs/demo.gif)
+
+<sub>Recorded against the real Docker Compose stack with [`scripts/demo.py`](scripts/demo.py);
+re-record with [`scripts/record-demo.sh`](scripts/record-demo.sh).</sub>
+
 ## At a glance
 
 | | |
