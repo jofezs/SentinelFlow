@@ -11,9 +11,20 @@ SentinelFlow is an event-driven microservices platform. Users submit **container
 results against policy-as-code, tracks compliance metrics over time, and fires signed webhooks
 when something violates policy.
 
-**Security:** see the [threat model](docs/threat-model.md): 24 threats across 5 trust
-boundaries, each linked to the code or test that addresses it, with the open risks stated
-openly.
+## At a glance
+
+| | |
+|---|---|
+| **Architecture** | 8 services (FastAPI gateway, 3 scanners, OPA policy engine, workers) communicating over NATS JetStream with a transactional outbox, idempotent consumers and fail-closed policy decisions. [Event flow →](#event-flow-and-delivery-guarantees) |
+| **Scanning** | Trivy for image CVEs and secrets, Hadolint plus 9 custom Dockerfile rules, and an API probe (TLS, headers, CORS) behind an SSRF guard enforced on every TCP connection. [SSRF design →](#api-endpoint-scanner-and-ssrf-protection) |
+| **Policy as code** | 8 Rego policies, configurable per project; every decision records the exact rules it was judged against. [Policies →](#policy-engine-opa--rego) |
+| **Zero trust on Kubernetes** | Helm chart under the "restricted" Pod Security Standard, default-deny NetworkPolicies, and a least-privilege message bus. Both are proven by **attacking the running stack in CI**. [Kubernetes →](#kubernetes) |
+| **Supply chain** | Every image is scanned, then signed (keyless cosign) with a signed SBOM, and deployed by verified digest. The gate caught **4 critical CVEs in our own images** on its first run. [Pipeline →](#supply-chain-and-cicd) |
+| **Threat model** | [24 threats across 5 trust boundaries](docs/threat-model.md), each linked to its control and test. It found a real flaw (a compromised scanner could forge a PASS), which was then fixed. Open risks are listed openly. |
+| **Quality** | 264 tests on real Postgres, NATS and OPA; end-to-end tests on Docker Compose **and** Kubernetes; Prometheus metrics, alerts and a Grafana dashboard. |
+
+**Try it:** `docker compose up --build -d --wait`, then `python scripts/smoke_test.py`
+([Quick start](#quick-start)).
 
 ## Architecture
 
@@ -55,7 +66,7 @@ Services communicate only through versioned event contracts defined in
 | Policy | Open Policy Agent (Rego) |
 | Storage & metrics | PostgreSQL, Prometheus, Grafana |
 | Platform | Docker, Kubernetes (kind), Helm |
-| CI/CD & DevSecOps | GitHub Actions, Ruff, mypy, pytest, gitleaks, CodeQL, Trivy, cosign, Syft |
+| CI/CD & DevSecOps | GitHub Actions, Ruff, mypy, pytest, gitleaks, Trivy, cosign, Syft, GitHub code scanning |
 
 ## Roadmap
 
@@ -67,7 +78,7 @@ Services communicate only through versioned event contracts defined in
 - [x] **Phase 5** – Signed webhooks with retries + Prometheus metrics, alerts, Grafana dashboard
 - [x] **Phase 6** – Helm chart, kind deployment, HPA, NetworkPolicies, Pod Security "restricted"
 - [x] **Phase 7** – CI/CD: signed images on GHCR, SBOMs, self-scan gate, e2e on Kubernetes
-- [ ] **Phase 8** – Threat model, docs, demo
+- [x] **Phase 8** – Threat model, least-privilege message bus, documentation
 
 ## Quick start
 
